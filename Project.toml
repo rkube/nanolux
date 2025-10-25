@@ -1,0 +1,14 @@
+name = "nanolux"
+uuid = "9e1bbf0d-3400-4a76-8ebd-2a15219acd99"
+version = "0.1.0"
+authors = ["Ralph Kube <ralph_kube@gmx.net>"]
+
+[deps]
+BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
+Lux = "b2108857-7c20-44ae-9111-449ecde12c47"
+OneHotArrays = "0b1bfda6-eb8a-41d2-88d8-f5af5cad476f"
+
+[compat]
+BenchmarkTools = "1.6.3"
+Lux = "1.24.0"
+OneHotArrays = "0.2.10"
