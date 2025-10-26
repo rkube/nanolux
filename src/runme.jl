@@ -1,4 +1,6 @@
+using Distributions
 using Lux
+using OneHotArrays
 using Random
 
 # Following along
@@ -225,26 +227,75 @@ end
 m = Embedding(vocab_size => vocab_size)
 ps, st = Lux.setup(rng, m)
 
-# This output is of shape (65, 8, 4). Again, since Julia uses column-major data storage,
-# the order of the dimensions is reversed compared to python.
+# The model embeds each token in a (C=vocab_size)-dimensional layer. 
+# As a result, the model transforms its input xb of size(T, B) = (block_size, batch_size) into
+# a (C=65, T=8, B=4)-size matrix. Since Julia uses column-major layout, the embedding vectors are
+# stored consecutively in memory.
 #
 # To apply the model to a batch of training data, simply call it and remember to pass the 
-# parameters and the state. The output is of shape (num_classes, block_size, batch_size) ≡ (C, B, N)
+# parameters and the state. The output is of shape (num_classes, block_size, batch_size) ≡ (C, B, T)
 out, _ = m(xb, ps, st)
 
 # Julia defines a function-like interface. So instead of evaluating the loss function inside a forward pass,
-# we simply evaluate it outside:
+# we simply evaluate it outside.
+#
+# We also have to do some reshaping. Julia 
+#
 #
 function loss_fun(model, ps, st, (xb, yb))
     # Outputs are interpreted as the logits.
     logits, _ = model(xb, ps, st)
     (C, T, B) = size(logits)
     logits_t = reshape(logits, C, T*B)  # Reshape, so that dim2 is along separate samples
+    yb_t = reshape(yb, T*B)
+    # Here we have to resort to OneHotArrays to get the CrossEntropy to work.
+    oh = onehotbatch(yb_t, 1:65)
     # USe a negative log-likelihood loss function
-    loss = CrossEntropyLoss(; agg=mean, logits=Val(true))(logits, yb)
+    loss = CrossEntropyLoss(; agg=mean, logits=Val(true))(logits_t, oh)
     return loss
 end
 
+# Now we can evaluate the loss function. The untrained model should be random. We have 65 possible vocabulary
+# elements. For random choices, we would expect something in the order of log(1.0/65.0)
 loss_fun(m, ps, st, (xb, yb))
+
+# Now we want to have a function to generate samples from the data.
+#
+#
+
+
+# idx is the current context of some characters in a batch. size(xb) = (T, B).
+# This function will extend this to size(idx) = (T, B + max_new_tokens)
+function generate(xb, max_new_tokens, model, ps, st)
+    # Pre-allocate an array with the current number of tokens + new number of tokens
+    T, B = size(xb)
+    # Remember, T is the context. B are the batches that are run individually
+    tokens_out = zeros(eltype(xb), T + max_new_tokens, B)
+    println("size(tokens_out) = ", size(tokens_out))
+    # copy seed tokens into the output
+    tokens_out[1:T, 1:B] .= xb[1:T, 1:B]
+    # Make a prediction to get the next logits.
+    logits, _ = model(view(tokens_out, 1:T, 1:B), ps, st)
+    println("size(logits) = ", size(logits))
+    # Apply softmax to the embedding dimension get probabilities, but only to the new prediction.
+    # In particular, summing over the embedding dimension should give 1!
+    # sum(probs, dims=1) = ones(1, B)
+    # Apply softmax to get probabilities
+    probs = softmax(view(logits, :, B, :), dims=1)
+    println("size(probs) = ", size(probs))
+    # Sample from the probabilities
+    samples = [rand(Distributions.Categorical(probs[:, B]), 1) for b in 1:B]
+    println("size(samples) = ", size(samples))
+    # Append sampled index to the running sequence.
+    tokens_out[T+1, :] .= [samples[i][1] for i in 1:B]
+    return tokens_out
+end
+
+generate(xb, 1, model, ps, st)
+
+
+
+
+
 
 

@@ -5,10 +5,14 @@ authors = ["Ralph Kube <ralph_kube@gmx.net>"]
 
 [deps]
 BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
+Distributions = "31c24e10-a181-5473-b8eb-7969acd0382f"
+GLMakie = "e9467ef8-e4e7-5192-8a1a-b1aee30e663a"
 Lux = "b2108857-7c20-44ae-9111-449ecde12c47"
 OneHotArrays = "0b1bfda6-eb8a-41d2-88d8-f5af5cad476f"
 
 [compat]
 BenchmarkTools = "1.6.3"
+Distributions = "0.25.122"
+GLMakie = "0.13.6"
 Lux = "1.24.0"
 OneHotArrays = "0.2.10"
