@@ -127,7 +127,7 @@ data_test = data[N_train+1:end]
 # counted started from 1. In this spirit, Julia's syntax is close to written math.
 #
 # To split the data into block sizes, we define a block size and look at the first 8 trainnig
-# data
+# data. The block size is called T, and defines the size of the context window.
 block_size = 8
 data_train[1:block_size+1]
 
@@ -199,7 +199,7 @@ julia> x
 
 # Let's see how the example above works when we make it more complicated by including the batch size.
 #
-batch_size = 4
+batch_size = 4 # This is called B in short.
 xb, yb = get_batch(data_train, batch_size, block_size)
 
 
@@ -264,36 +264,80 @@ loss_fun(m, ps, st, (xb, yb))
 #
 
 
-# idx is the current context of some characters in a batch. size(xb) = (T, B).
-# This function will extend this to size(idx) = (T, B + max_new_tokens)
-function generate(xb, max_new_tokens, model, ps, st)
+"""
+Helper function for batched categorical sampling.
+`probs` is a (Classes, Batch) matrix.
+Returns a (1, Batch) matrix of sampled indices.
+"""
+function sample_categorical_batch(probs::AbstractMatrix)
+    C, B = size(probs)
+    # Pre-allocate output
+    idx_next = Matrix{Int}(undef, 1, B)
+    
+    # Normalize each column to be safe for Distributions.Categorical
+    # This prevents errors if sum(col) is 0.999999
+    probs_normalized = probs ./ sum(probs; dims=1)
+    @show size(probs_normalized)
+    
+    for i in 1:B
+        # view(probs_normalized, :, i) is a 1D view of the i-th column
+        dist = Distributions.Categorical(probs_normalized[:, i])
+        idx_next[1, i] = rand(dist)
+    end
+    
+    return idx_next
+end
+
+
+"""
+
+"""
+function generate(input, max_new_tokens, model, ps, st)
     # Pre-allocate an array with the current number of tokens + new number of tokens
-    T, B = size(xb)
+    T, B = size(input)
     # Remember, T is the context. B are the batches that are run individually
-    tokens_out = zeros(eltype(xb), T + max_new_tokens, B)
-    println("size(tokens_out) = ", size(tokens_out))
-    # copy seed tokens into the output
-    tokens_out[1:T, 1:B] .= xb[1:T, 1:B]
-    # Make a prediction to get the next logits.
-    logits, _ = model(view(tokens_out, 1:T, 1:B), ps, st)
-    println("size(logits) = ", size(logits))
-    # Apply softmax to the embedding dimension get probabilities, but only to the new prediction.
-    # In particular, summing over the embedding dimension should give 1!
-    # sum(probs, dims=1) = ones(1, B)
-    # Apply softmax to get probabilities
-    probs = softmax(view(logits, :, B, :), dims=1)
-    println("size(probs) = ", size(probs))
-    # Sample from the probabilities
-    samples = [rand(Distributions.Categorical(probs[:, B]), 1) for b in 1:B]
-    println("size(samples) = ", size(samples))
-    # Append sampled index to the running sequence.
-    tokens_out[T+1, :] .= [samples[i][1] for i in 1:B]
+    # 1. Pre-allocate the output array - this is of filesize
+    tokens_out = similar(input, T + max_new_tokens, B)
+    # 2. Get the initial context (the very last input token).
+    tokens_out[1:T, :] .= input
+
+    # 3. Get the initial context (the very last input token)
+    current_token = view(tokens_out, 1:T, :)
+    for ix_t in 1:max_new_tokens
+        println("ix_t = $(ix_t)")
+        # 1. Get the logits from the model.
+        #    Here we pass only the last token,
+        logits, st = model(current_token, ps, st)
+        @show size(logits)
+
+        # Apply softmax to the embedding dimension get probabilities, but only to the new prediction.
+        # In particular, summing over the embedding dimension should give 1!
+        # sum(probs, dims=1) = ones(1, B)
+        # Apply softmax to get probabilities
+        # 2. Get the logits for the last time step
+        logits_last = logits[:, end, :] # Size (C, B)
+
+        # 3. Convert the logits to a probability by applying softmax
+        probs = softmax(logits_last; dims=1) # Shape (C, B)
+
+        # 4. Sample one index for each batch item
+        #    TODO: The current implementation won't work on the gpu. 
+        #    To fix this, we'd need the gumbel-max trick.
+        idx_next = sample_categorical_batch(probs) # (1, 
+        @show size(idx_next)
+
+        # 5. Store the new token in the output array 
+        tokens_out[T+ix_t:T+ix_t, :] .= idx_next 
+
+        # 6. Update the context window for the next iteration 
+        current_token = view(tokens_out, 1:T+ix_t, :)
+    end
     return tokens_out
 end
 
-generate(xb, 1, model, ps, st)
+out = generate(xb, 3, model, ps, st)
 
-
+out = generate(ones(Int64, 1, 1), 5, model, ps, st)
 
 
 
