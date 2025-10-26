@@ -1,6 +1,9 @@
+using ADTypes
+using Zygote
 using Distributions
 using Lux
 using OneHotArrays
+using Optimisers
 using Random
 
 # Following along
@@ -200,7 +203,7 @@ julia> x
 # Let's see how the example above works when we make it more complicated by including the batch size.
 #
 batch_size = 4 # This is called B in short.
-xb, yb = get_batch(data_train, batch_size, block_size)
+xb, yb = get_batch(rng, data_train, batch_size, block_size)
 
 
 # The loop below prints out the conext and the target, as provided by the data loaders.
@@ -224,8 +227,8 @@ end
 # Now, we create a Lux model with an embedding layer. This is our first contact with Lux.jl
 # Say something about how parameters and state are not within the structs. So we typically have
 # to pass them in every call
-m = Embedding(vocab_size => vocab_size)
-ps, st = Lux.setup(rng, m)
+model = Embedding(vocab_size => vocab_size)
+ps, st = Lux.setup(rng, model)
 
 # The model embeds each token in a (C=vocab_size)-dimensional layer. 
 # As a result, the model transforms its input xb of size(T, B) = (block_size, batch_size) into
@@ -234,12 +237,15 @@ ps, st = Lux.setup(rng, m)
 #
 # To apply the model to a batch of training data, simply call it and remember to pass the 
 # parameters and the state. The output is of shape (num_classes, block_size, batch_size) ≡ (C, B, T)
-out, _ = m(xb, ps, st)
+out, _ = model(xb, ps, st)
 
 # Julia defines a function-like interface. So instead of evaluating the loss function inside a forward pass,
 # we simply evaluate it outside.
+# In addition, this loss function adheres to the [Training API](https://lux.csail.mit.edu/stable/api/Lux/utilities)
+# One particularity of this API is that loss functions can take inputs in the form of 
+# loss_fun(model, ps, st, (x,y)) and return the loss, updated states, and an empty named tuple.
 #
-# We also have to do some reshaping. Julia 
+# We also have to do some reshaping. 
 #
 #
 function loss_fun(model, ps, st, (xb, yb))
@@ -249,15 +255,16 @@ function loss_fun(model, ps, st, (xb, yb))
     logits_t = reshape(logits, C, T*B)  # Reshape, so that dim2 is along separate samples
     yb_t = reshape(yb, T*B)
     # Here we have to resort to OneHotArrays to get the CrossEntropy to work.
-    oh = onehotbatch(yb_t, 1:65)
+    oh = onehotbatch(yb_t, 1:C)
     # USe a negative log-likelihood loss function
     loss = CrossEntropyLoss(; agg=mean, logits=Val(true))(logits_t, oh)
-    return loss
+    println("loss_fun: loss = $(loss)")
+    return loss, st, NamedTuple()
 end
 
 # Now we can evaluate the loss function. The untrained model should be random. We have 65 possible vocabulary
 # elements. For random choices, we would expect something in the order of log(1.0/65.0)
-loss_fun(m, ps, st, (xb, yb))
+loss_fun(model, ps, st, (xb, yb))
 
 # Now we want to have a function to generate samples from the data.
 #
@@ -277,7 +284,6 @@ function sample_categorical_batch(probs::AbstractMatrix)
     # Normalize each column to be safe for Distributions.Categorical
     # This prevents errors if sum(col) is 0.999999
     probs_normalized = probs ./ sum(probs; dims=1)
-    @show size(probs_normalized)
     
     for i in 1:B
         # view(probs_normalized, :, i) is a 1D view of the i-th column
@@ -290,7 +296,22 @@ end
 
 
 """
+    generate(input, max_new_tokens, model, ps, st)
 
+Autoregressively generates `max_new_tokens` new tokens based on the provided `input` context.
+
+At each step, the entire sequence of tokens generated so far is passed to the `model` to predict 
+the next token. This process is repeated `max_new_tokens` times.
+
+# Arguments
+- `input`: A `(T, B)` matrix of token indices representing the initial context, where `T` is the sequence length and `B` is the batch size.
+- `max_new_tokens`: The number of new tokens to generate for each sequence in the batch.
+- `model`: The language model to use for generation.
+- `ps`: The parameters of the model.
+- `st`: The state of the model.
+
+# Returns
+- A `(T + max_new_tokens, B)` matrix containing the original `input` context followed by the newly generated tokens.
 """
 function generate(input, max_new_tokens, model, ps, st)
     # Pre-allocate an array with the current number of tokens + new number of tokens
@@ -304,11 +325,10 @@ function generate(input, max_new_tokens, model, ps, st)
     # 3. Get the initial context (the very last input token)
     current_token = view(tokens_out, 1:T, :)
     for ix_t in 1:max_new_tokens
-        println("ix_t = $(ix_t)")
         # 1. Get the logits from the model.
         #    Here we pass only the last token,
         logits, st = model(current_token, ps, st)
-        @show size(logits)
+        #@show size(logits)
 
         # Apply softmax to the embedding dimension get probabilities, but only to the new prediction.
         # In particular, summing over the embedding dimension should give 1!
@@ -324,7 +344,7 @@ function generate(input, max_new_tokens, model, ps, st)
         #    TODO: The current implementation won't work on the gpu. 
         #    To fix this, we'd need the gumbel-max trick.
         idx_next = sample_categorical_batch(probs) # (1, 
-        @show size(idx_next)
+        #@show size(idx_next)
 
         # 5. Store the new token in the output array 
         tokens_out[T+ix_t:T+ix_t, :] .= idx_next 
@@ -337,9 +357,36 @@ end
 
 out = generate(xb, 3, model, ps, st)
 
-out = generate(ones(Int64, 1, 1), 5, model, ps, st)
+# Generate output of the model for a simple input
+out = generate(ones(Int64, 1, 1), 100, model, ps, st)
+
+# Now we can also print the output generated by the model
+print(join(decode(out), ""))
 
 
+### Next, we'd have to train this model.
+#
+model = Embedding(vocab_size => vocab_size)
+ps, st = Lux.setup(rng, model)
+opt = Adam(0.03f0)
+
+# TrainState is a useful struct defined by lux. It is essentially a warpper over parameters, state, optimizer state,
+# and the model. We only need to pass this into our training function
+tstate = Training.TrainState(model, ps, st, opt)
+
+function train(tstate::Training.TrainState, vjp, data_set, num_epochs)
+    for epoch in 1:num_epochs
+        xb, yb = get_batch(rng, data_set, 4, 8)
+        _, loss, _, _tstate = Training.single_train_step!(vjp, loss_fun, (xb, yb), tstate)
+        println("Epoch: $(epoch)    Loss: $(loss)")
+    end
+    return tstate
+end
 
 
+train(tstate, AutoZygote(), data_train, 10_000)
+
+
+out = generate(ones(Int64, 1, 1), 500, model, ps, st);
+print(join(decode(out), ""))
 
