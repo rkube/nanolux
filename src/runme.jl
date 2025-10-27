@@ -390,3 +390,33 @@ train(tstate, AutoZygote(), data_train, 10_000)
 out = generate(ones(Int64, 1, 1), 500, model, ps, st);
 print(join(decode(out), ""))
 
+
+# The mathematical trick in self-attention
+#
+
+Random.seed!(rng, 1337)
+
+B, T, C = 4, 8, 2
+x = randn(C, T, B)
+size(x)
+
+# We have 8 tokens in a batch that are not talking to each other.
+# Now we make them talk to each other.
+# Couple them in an autoregressive way. Token in location 5 should only communicate 
+# with tokens 1..4. But not with 6..8. So we don't get any information from the future.
+#
+# Simplest way is to give token 5 an average over tokens 1..4. This is very lossy, but gets the
+# point across.
+#
+# For every batch element calculate the average of the preceeding tokens.
+
+xbow = zeros(C, T, B) # Bag-of-words is when you just average up things.
+for ix_t in 1:T
+    for ix_b in 1:B
+        # The corresponding pytorch expression is x[b, :t+1]. 
+        # Pytorch implicitly expands this to x[b, :t+1, :]. In Julia there is no such implicit 
+        # slicing. We have to select the channel dimension explicitly.
+        xprev = x[:, 1:ix_t, ix_b]   # Select slice (C, t, b)
+    end
+end
+
