@@ -156,12 +156,27 @@ b = [2.0 7.0; 6.0 4.0; 6.0 5.0]
 # Now the rows of c store the average of all the elements deposited in the row.
 c = a * b
 
-# with this, we can  vectorize this
-wei = tril(ones(T, T))
-wei = wei ./ sum(wei, dims=2)
+# The central idea is that we can formulate the mean_{i≤t} operation by using a lower triangular matrix.
+# In particular
+#
+wts = triu(ones(T, T))
+wts = wts ./ sum(wts, dims=1)
 
-# Training reactant
-# julia --project=. src/training_reactant.jl  10.04s user 2.39s system 123% cpu 10.028 total
+# Now we can express the time-average through matrix multiplication.
+# We multiply the weights matrix for the first batch
+xbow2 = x[:,:,1] * wts
+xbow[:,:,1] ≈ xbow2
 
-# Zygote
-#  800.922 ms (7430140 allocations: 1.21 GiB)
+# Do do this for every batch in one go, we can use NNlib.batched_mul.
+# Note that 
+size(wts)
+# (8, 8)
+# and 
+size(x)
+# (2, 8, 4).
+# We want to multiple all four (2,8) batches of x with the (8,8) wts matrix to get an 
+# (2,8) * (8,8) = (2,8) matrix. To properly broadcast this in NNlib, we have to add another
+# dimension to wts.
+NNlib.batched_mul(x, reshape(wts, (8,8,1)))
+# We can also use fancy notation, use ⊠ \boxtimes
+xbow3 ≈ x ⊠ reshape(wts, (8,8,1)) 

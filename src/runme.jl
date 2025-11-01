@@ -1,6 +1,7 @@
 using ADTypes
 using Zygote
 using Distributions
+using LinearAlgebra
 using Lux
 using OneHotArrays
 using Optimisers
@@ -380,7 +381,9 @@ function train(tstate::Training.TrainState, vjp, data_set, num_epochs)
     for epoch in 1:num_epochs
         xb, yb = get_batch(rng, data_set, 4, 8)
         _, loss, _, _tstate = Training.single_train_step!(vjp, loss_fun, (xb, yb), tstate)
-        println("Epoch: $(epoch)    Loss: $(loss)")
+        if mod(epoch, 100) == 0
+            println("Epoch: $(epoch)    Loss: $(loss)")
+        end
     end
     return tstate
 end
@@ -423,4 +426,5 @@ for ix_t in 1:T
         xbow[:, ix_t, ix_b] .= m[:, 1]
     end
 end
+
 
