@@ -355,6 +355,8 @@ function generate(input, max_new_tokens, model, ps, st)
     return tokens_out
 end
 
+#Note for future me: Look into sampling the categorical distribution using GumbelSoftmax: https://casmls.github.io/general/2017/02/01/GumbelSoftmax.html
+
 out = generate(xb, 3, model, ps, st)
 
 # Generate output of the model for a simple input
@@ -409,14 +411,16 @@ size(x)
 # point across.
 #
 # For every batch element calculate the average of the preceeding tokens.
-
+# See notes on implementation in examples/tensor_thingies.jl
 xbow = zeros(C, T, B) # Bag-of-words is when you just average up things.
 for ix_t in 1:T
     for ix_b in 1:B
         # The corresponding pytorch expression is x[b, :t+1]. 
         # Pytorch implicitly expands this to x[b, :t+1, :]. In Julia there is no such implicit 
         # slicing. We have to select the channel dimension explicitly.
-        xprev = x[:, 1:ix_t, ix_b]   # Select slice (C, t, b)
+        xprev = view(x, :, 1:ix_t, ix_b)   # Select slice (C, t, b) as a view 
+        m = mean(xprev, dims=2)
+        xbow[:, ix_t, ix_b] .= m[:, 1]
     end
 end
 

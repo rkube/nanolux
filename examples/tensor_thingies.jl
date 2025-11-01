@@ -1,4 +1,6 @@
 using BenchmarkTools
+using LinearAlgebra
+using NNlib
 using Statistics
 
 # We are operating on this torch tensor 
@@ -137,4 +139,29 @@ BenchmarkTools.Trial: 10000 samples with 1 evaluation per sample.
  Memory estimate: 52.14 KiB, allocs estimate: 1324.
 """
 
+# The trick in self-attention
+a = ones(3, 3)
+b = [2.0 7.0; 6.0 4.0; 6.0 5.0]
+c = a * b
 
+# To create triangular matrces in Julia, we call the tril function, just as in torch.
+a = tril(ones(3,3))
+b = [2.0 7.0; 6.0 4.0; 6.0 5.0]
+c = a * b
+
+# We can adapt this to calculate a mean from a sum
+a = tril(ones(3,3)) 
+a = a ./ sum(a, dims=2) # Divide by the row-wise sum. We don't need keepdim=True, as in pytorch.
+b = [2.0 7.0; 6.0 4.0; 6.0 5.0]
+# Now the rows of c store the average of all the elements deposited in the row.
+c = a * b
+
+# with this, we can  vectorize this
+wei = tril(ones(T, T))
+wei = wei ./ sum(wei, dims=2)
+
+# Training reactant
+# julia --project=. src/training_reactant.jl  10.04s user 2.39s system 123% cpu 10.028 total
+
+# Zygote
+#  800.922 ms (7430140 allocations: 1.21 GiB)
