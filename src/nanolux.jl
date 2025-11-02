@@ -1,5 +1,8 @@
-module nanolux
+module NanoLux
 
-greet() = print("Hello World!")
+export DATAFILE
+const DATAFILE = "data/input.txt"
+
+include("dataloader.jl")
 
 end # module nanolux

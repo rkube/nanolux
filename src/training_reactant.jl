@@ -7,7 +7,7 @@ using Lux
 using OneHotArrays
 using Optimisers
 using Random
-using Zygote
+using Reactant
 
 
 
@@ -68,29 +68,55 @@ function loss_fun(model, ps, st, (xb, yb))
 end
 
 
+function train(num_epochs)
 
-N = length(dataset)
-N_train = Int(round(0.9 * N))
-data_train = dataset[1:N_train]
-data_test = dataset[N_train+1:end]
+    # Load dataset and everything around it
+    dataset, encode_fun, decode_fun, vocab_size = load_dataset("data/input.txt")
 
- 
-rng = Random.default_rng()
-Random.seed!(rng, 1337)
+    # Train/test split
+    N = length(dataset)
+    N_train = Int(round(0.9 * N))
+    data_train = dataset[1:N_train]
+    data_test = dataset[N_train+1:end]
 
-model = Embedding(vocab_size => vocab_size)
-ps, st = Lux.setup(rng, model)
-opt = Adam(0.03f0)
+    rng = Random.default_rng()
+    Random.seed!(rng, 1337)
 
-# TrainState is a useful struct defined by lux. It is essentially a warpper over parameters, state, optimizer state,
-# and the model. We only need to pass this into our training function
-tstate = Training.TrainState(model, ps, st, opt)
-vjp_rule = AutoEnzyme()
+    model = Embedding(vocab_size => vocab_size)
+    ps, st = Lux.setup(rng, model)
+    opt = Adam(0.03f0)
 
-function train(tstate::Training.TrainState, vjp, data_set, num_epochs)
+    # Test everything in reactant
+    xb, yb = get_batch(rng, dataset, 4, 8)
+
+    xdev = cpu_device()
+    xb_ra = xb |> xdev
+    yb_ra = yb |> xdev
+    ps_ra = ps |> xdev
+    st_ra = st |> xdev
+    #
+    # model_compiled = @compile model(xb_ra, ps_ra, Lux.testmode(st))
+    #pred_compiled, _ = model_compiled(xb_ra, ps_ra, Lux.testmode(st))
+    #
+    #
+    ## Test regular loss function
+    #loss_fun(model, ps, st, xb, yb)
+    #
+    #function enzyme_gradient(model, ps, st, xb, yb)
+    #    return Enzyme.gradient(Enzyme.Reverse, Const(loss_fun), Const(model), ps, Const(st), (Const(xb), Const(yb)))[2]
+    #end
+    ##
+    #enzyme_gradient_compiled = @compile enzyme_gradient(model, ps_ra, st_ra, xb_ra, yb_ra)
+
+    # TrainState is a useful struct defined by lux. It is essentially a warpper over parameters, state, optimizer state,
+    # and the model. We only need to pass this into our training function
+    tstate = Training.TrainState(model, ps_ra, st_ra, opt)
+    vjp_rule = AutoEnzyme()
+
+
     for epoch in 1:num_epochs
-        xb, yb = get_batch(rng, data_set, 4, 8)
-        _, loss, _, _tstate = Training.single_train_step!(vjp, loss_fun, (xb, yb), tstate)
+        xb, yb = get_batch(rng, dataset, 4, 8)
+        _, loss, _, _tstate = Training.single_train_step!(vjp_rule, loss_fun, (xb, yb), tstate)
 
         if mod(epoch, 1000) == 0
             println("Epoch: $(epoch)    Loss: $(loss)")
@@ -100,5 +126,7 @@ function train(tstate::Training.TrainState, vjp, data_set, num_epochs)
 end
 
 
-@btime train(tstate, AutoZygote(), data_train, 10_000)
+
+train(10_000)
+
 

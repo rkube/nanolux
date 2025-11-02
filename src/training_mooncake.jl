@@ -87,17 +87,24 @@ tstate = Training.TrainState(model, ps, st, opt)
 vjp_rule = AutoEnzyme()
 
 function train(tstate::Training.TrainState, vjp, data_set, num_epochs)
-    for epoch in 1:num_epochs
+
+    xb, yb = get_batch(rng, data_set, 4, 8)
+    _, loss, _, tstate = Training.single_train_step!(vjp, loss_fun, (xb, yb), tstate)
+    t_start = time_ns()
+    for epoch in 2:num_epochs
         xb, yb = get_batch(rng, data_set, 4, 8)
-        _, loss, _, _tstate = Training.single_train_step!(vjp, loss_fun, (xb, yb), tstate)
+        _, loss, _, tstate = Training.single_train_step!(vjp, loss_fun, (xb, yb), tstate)
 
         if mod(epoch, 1000) == 0
             println("Epoch: $(epoch)    Loss: $(loss)")
         end
     end
+    t_end = time_ns()
+    println("Loop finished in $((t_end-t_start)*1e-9)s")
     return tstate
 end
 
+train(tstate, AutoMooncake(), data_train, 10_000)
 
-@btime train(tstate, AutoMooncake(), data_train, 10_000)
+#@btime train(tstate, AutoMooncake(), data_train, 10_000)
 

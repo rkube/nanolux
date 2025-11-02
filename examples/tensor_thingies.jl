@@ -139,6 +139,8 @@ BenchmarkTools.Trial: 10000 samples with 1 evaluation per sample.
  Memory estimate: 52.14 KiB, allocs estimate: 1324.
 """
 
+xbow = mean_thing_view(x)
+
 # The trick in self-attention
 a = ones(3, 3)
 b = [2.0 7.0; 6.0 4.0; 6.0 5.0]
@@ -179,4 +181,17 @@ size(x)
 # dimension to wts.
 NNlib.batched_mul(x, reshape(wts, (8,8,1)))
 # We can also use fancy notation, use ⊠ \boxtimes
-xbow3 ≈ x ⊠ reshape(wts, (8,8,1)) 
+# This is the final expression:
+xbow2 = x ⊠ reshape(wts, (8,8,1)) 
+xbow2 ≈ xbow
+
+# To do weighted aggregations, it is useful to use a softmax.
+# Like 1 and 0 are just extreme cases. In the future we want to allow intermediate values
+# This softmax formulation here prepares us for this.
+my_triu = triu(ones(T, T))
+wts2 = zeros(T, T)
+wts2[my_triu .!= 1.0] .= -Inf
+wts2 = softmax(wts2, dims=1)
+wts2 ≈ wts
+xbow3 = x ⊠ reshape(wts2,(T,T,1))
+xbow3 ≈ xbow
