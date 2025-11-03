@@ -61,7 +61,7 @@ yb_hot = onehotbatch(yb, 1:65)
 
 
 
-export NanoDataset, encode, decode
+export NanoDataset, encode, decode, get_vocab_size
 
 """
     NanoDataset
@@ -112,13 +112,47 @@ decode(d::NanoDataset, i::AbstractArray{<:Integer}) = [d.int_to_ch[ii] for ii in
 
 Total number of tokens in the Dataset
 """
-Base.length(d::NanoDataset) = d.length
+Base.length(d::NanoDataset) = d.length - d.block_size - 2
 
 
+"""
+    Base.getindex(d::NanoDataset, i::Int)
+
+Return a single observation.
+
+Note that the block_size, i.e. the sequence length is hard-coded in NanoDataset.
+So a single observation is actually d.block_size characters.
+
+```julia-repl
+julia> getindex(d, 2)
+16-element Vector{Int64}:
+ 47
+ 56
+ 57
+ 58
+  1
+ 15
+ 47
+ 58
+ 47
+ 64
+ 43
+ 52
+ 10
+ 65
+ 14
+ 43
+```
+"""
 function Base.getindex(d::NanoDataset, i::Int)
-    1 <= i <= d.length - d.block_size || throw(ArgumentError("Index is out of bounds"))
-    return d.data[i:i+d.block_size-1]
+    1 <= i <= d.length - d.block_size - 1|| throw(ArgumentError("Index is out of bounds"))
+    return (d.data[i:i+d.block_size-1], d.data[i+1:i+d.block_size])
 end
+
+get_vocab_size(d::NanoDataset) = length(d.ch_to_int)
+
+
+MLUtils.getobs(d::NanoDataset, i::AbstractArray{<:Integer}) = [getobs(d, ii) for ii in i]
 
 
 
