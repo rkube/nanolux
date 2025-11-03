@@ -1,5 +1,6 @@
 using BenchmarkTools
 using LinearAlgebra
+using Lux
 using NNlib
 using Statistics
 
@@ -195,3 +196,124 @@ wts2 = softmax(wts2, dims=1)
 wts2 ≈ wts
 xbow3 = x ⊠ reshape(wts2,(T,T,1))
 xbow3 ≈ xbow
+
+"""
+julia> @benchmark mean_thing_mat(x)
+BenchmarkTools.Trial: 10000 samples with 72 evaluations per sample.
+ Range (min … max):  756.361 ns … 92.444 μs  ┊ GC (min … max): 0.00% … 98.72%
+ Time  (median):     886.000 ns              ┊ GC (median):    0.00%
+ Time  (mean ± σ):     1.017 μs ±  1.449 μs  ┊ GC (mean ± σ):  8.40% ±  8.99%
+
+   █
+  ▂█▅▅▃▂▂▂▂▂▂▂▁▁▁▁▁▁▁▂▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▂▂▂ ▂
+  756 ns          Histogram: frequency by time         5.56 μs <
+
+ Memory estimate: 3.61 KiB, allocs estimate: 22.
+"""
+
+function mean_thing_mat(x)
+    T = size(x, 2)
+    my_triu = triu(ones(T, T))
+    wts = zeros(T, T)
+    wts[my_triu .!= 1.0] .= -Inf 
+    wts = softmax(wts, dims=1)
+    xbow = x ⊠ reshape(wts, (T, T, 1))
+    xbow
+end
+
+
+# All three mean-thing functions are equal
+xbow1 = mean_thing_noview(x)
+xbow2 = mean_thing_view(x)
+xbow3 = mean_thing_mat(x)
+xbow1 ≈ xbow2
+xbow1 ≈ xbow2
+
+#############################################################################################
+# Continue on implementing self-attention
+# Video time-code:  https://youtu.be/kCc8FmEb1nY?t=3757
+#
+
+rng = Random.default_rng()
+Random.seed!(rng, 1337)
+
+B, T, C = 4, 8, 32
+
+x = randn(Float32, C, T, B)
+
+head_size = 16
+
+key = Dense(C => head_size; use_bias=false)
+ps_k, st_k = Lux.setup(rng, key)
+
+query = Dense(C => head_size; use_bias=false)
+ps_q, st_q = Lux.setup(rng, query)
+
+
+value = Dense(C => head_size; use_bias=false)
+ps_v, st_v = Lux.setup(rng, value)
+
+k, _ = key(x , ps_k, st_k)  # size = (head_size, T, B)
+q, _ = query(x, ps_q, st_q) # size = (head_size, T, B)
+v, _ = value(x, ps_v, st_v) # size = (head_size, T, b)
+
+# This is what we want
+wts_unrolled = [q[:,:,ix]' * k[:,:,ix] for ix in axes(q,3)]
+
+# Try writing it with Boxtimes. (head_size, T, B) * ( T, head_size, B) -> (T, 
+#wts_box = q ⊠ permutedims(k, (2,1,3))
+wts = permutedims(q, (2,1,3)) ⊠ k
+
+wts_unrolled[1] == wts[:,:,1]
+wts_unrolled[2] == wts[:,:,2]
+wts_unrolled[3] == wts[:,:,3]
+wts_unrolled[4] == wts[:,:,4]
+
+my_triu = triu(ones(T, T))
+for ix_b ∈ axes(wts, 3)
+    wts[my_triu .!= 1.0, ix_b] .= -Inf
+end
+
+wts = softmax(wts, dims=1)
+v, _ = value(x, ps_v, st_v)
+
+
+
+
+
+
+function single_head_attention(x, head_size)
+    # Models for key, query, and value
+    key = Dense(C => head_size; use_bias=false)
+    ps_k, st_k = Lux.setup(rng, key)
+
+    query = Dense(C => head_size; use_bias=false)
+    ps_q, st_q = Lux.setup(rng, query)
+
+    value = Dense(C => head_size; use_bias=false)
+    ps_v, st_v = Lux.setup(rng, query)
+
+    k, _ = key(x , ps_k, st_k)  # size = (head_size, T, B)
+    q, _ = query(x, ps_q, st_q) # size = (head_size, T, B)
+    v, _ = value(x, ps_v, st_v) # size = (head_size, T, B)
+
+    # Bag-of-word averaging is replaced by q*k vector products
+    wts = permutedims(q, (2,1,3)) ⊠ k # size = (T, T)
+
+    # Auto-regressive structure implemented by triu matrix, prohibiting communication
+    # with the past
+    my_triu = triu(ones(T, T))
+    # Unfortunately, we don't have a batched masked fill. So iterate it out
+    for ix_b ∈ axes(wts, 3)
+        wts[my_triu .!= 1.0, ix_b] .= -Inf 
+    end
+    # Normalize so we get a probability
+    wts = softmax(wts, dims=1)
+    # Instead of working with token embeddings directly, work with the value
+    v ⊠ wts
+
+end
+
+out = single_head_attention(x, 16)
+
+
