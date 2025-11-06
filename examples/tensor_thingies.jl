@@ -2,6 +2,7 @@ using BenchmarkTools
 using LinearAlgebra
 using Lux
 using NNlib
+using Random
 using Statistics
 
 # We are operating on this torch tensor 
@@ -269,13 +270,91 @@ wts_unrolled[2] == wts[:,:,2]
 wts_unrolled[3] == wts[:,:,3]
 wts_unrolled[4] == wts[:,:,4]
 
+wts2 = copy(wts)
+wts3 = copy(wts)
+
 my_triu = triu(ones(T, T))
+mm = tril(fill(true, 16, 16), -1)
+
+# Explore 3 different methods to remove non-causal coupling
+# 1. Like in NanoGPT video, direct translation
+function mask1(wts, tt)
+    for ix_b ∈ axes(wts, 3)
+        wts[tt.!= 1.0, ix_b] .= -Inf
+    end
+end
+
+#julia> @benchmark mask1(wts, my_triu)
+#BenchmarkTools.Trial: 10000 samples with 202 evaluations per sample.
+# Range (min … max):  378.510 ns …  17.847 μs  ┊ GC (min … max): 0.00% … 96.14%
+# Time  (median):     473.802 ns               ┊ GC (median):    0.00%
+# Time  (mean ± σ):   528.838 ns ± 385.756 ns  ┊ GC (mean ± σ):  9.47% ± 12.71%
+#
+#   ▅██▇▄▂▁                                                      ▂
+#  █████████▆▅▃▃▅▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▃▄▃▃▄▁▄▃▅▄▆▆▅▆▆▆▇▆▆▇█▆▆▆▅▅▅▃▅▅ █
+#  379 ns        Histogram: log(frequency) by time       2.19 μs <
+
+ Memory estimate: 2.50 KiB, allocs estimate: 20.
+
+# 2. Double for loop, eliminates need for triu matrix
+function mask2(wts)
+    for ix_b ∈ axes(wts, 3)
+        for j in 1:T
+            for i in j+1:T
+                wts[i, j, ix_b] = -Inf
+            end
+        end
+    end
+end
+
+# 3. Don't index through triu, but subtraction should broadcast correctly
+function mask3(wts, tt)
+    causal_mask = view(tt, 1:T, 1:T)
+#    for ix_b ∈ axes(wts, 3)
+#        wts[tt.!= 1.0, ix_b] .= -Inf
+#    end
+    wts = wts .- (causal_mask .* 1e12)
+    return wts
+end
+
+#julia> @benchmark mask3(wts3, m) setup = (m = tril(fill(true, 16, 16), -1))
+#BenchmarkTools.Trial: 10000 samples with 641 evaluations per sample.
+# Range (min … max):  171.997 ns …  10.002 μs  ┊ GC (min … max):  0.00% … 96.20%
+# Time  (median):     213.924 ns               ┊ GC (median):     0.00%
+# Time  (mean ± σ):   279.923 ns ± 250.421 ns  ┊ GC (mean ± σ):  22.72% ± 20.89%
+#
+#   ▆█▇▄▁                                       ▁▁▂▂▂▁           ▂
+#  ██████▇▇▅▇▇▆▄▁▄▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▃▅▇██████▇█▇▇▆▇▆▆▆▆ █
+#  172 ns        Histogram: log(frequency) by time        1.1 μs <
+#
+# Memory estimate: 2.36 KiB, allocs estimate: 8.
+#
+
+
+mask1(wts, my_triu)
+@show wts
+
+wts3 = mask3(wts3, mm)
+
+
 for ix_b ∈ axes(wts, 3)
     wts[my_triu .!= 1.0, ix_b] .= -Inf
 end
 
+for ix_b ∈ axes(wts2, 3)
+    for j in 1:T
+        for i in j+1:T
+            wts2[i, j, ix_b] = -Inf
+        end
+    end
+end
+
 wts = softmax(wts, dims=1)
 v, _ = value(x, ps_v, st_v)
+
+wts3 = mask3(wts, mm)
+
+softmax(wts3, dims=1) ≈ softmax(wts, dims=1)
 
 
 
@@ -315,5 +394,45 @@ function single_head_attention(x, head_size)
 end
 
 out = single_head_attention(x, 16)
+
+#
+#struct SingleHeadAttention{Q, K, V} <: LuxCore.AbstractLuxContainerLayer{(:query, :key, :value)}
+#    vocab_size::Int
+#    head_size::Int
+#    query::Q 
+#    key::K 
+#    value::V 
+#end
+#
+#
+#function LuxCore.initialparameters(rng::AbstractRNG, sha::SingleHeadAttention)
+#    return (query.weight = sha.init_weight(rng, sha.head_size, sha.vocab_size),
+#            key.weight = sha.init_weight(rng, sha.head_size, sha.vocab_size),
+#            value.weight = sha.init_weight(rng, sha.head_size, sha.vocab_size))
+#end
+#
+#LuxCore.initialstates(::AbstractRNG, sha::SingleHeadAttention{Q, K, V}) where {Q, K, V} = NamedTuple(mask = triu((ones(sha.head_size, sha.head_size))))
+#
+#
+#function (sha::SingleHeadAttention)(x::AbstractMatrix, ps, st::NamedTuple)
+#    # Calculate query, key, and value vectors
+#    q, _ = sha.query(x, ps.query, st.query)
+#    k, _ = sha.key(x, ps.key, st.key)
+#    v, _ = sha.value(x, ps.value, st.value)
+#
+#
+#    wts = permutedims(q, (2, 1, 3)) ⊠ k # size = (T,T)
+#    # Auto-regressive structure implemented by triu matrix, prohibiting communication
+#    # with the past
+#    my_triu = triu(ones(T, T))
+#    # Unfortunately, we don't have a batched masked fill. So iterate it out
+#    for ix_b ∈ axes(wts, 3)
+#        wts[my_triu .!= 1.0, ix_b] .= -Inf 
+#    end
+#    # Normalize so we get a probability
+#    wts = softmax(wts, dims=1)
+#    # Instead of working with token embeddings directly, work with the value
+#    v ⊠ wts
+#end
 
 
