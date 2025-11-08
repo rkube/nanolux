@@ -31,13 +31,13 @@ end
 
 function LuxCore.initialstates(::AbstractRNG, sha::SingleHeadAttention{Q, K, V}) where {Q, K, V} 
     mask = tril(fill(true, sha.max_sequence_length, sha.max_sequence_length), -1)
-    return (causal_mask = mask, )
+    return (causal_mask = mask, query=NamedTuple(;), key = NamedTuple(;), value=NamedTuple(;))
 end
 
 
 function (sha::SingleHeadAttention)(x::AbstractArray, ps, st::NamedTuple)
     # x has shape (features, sequence_length, batch_size)
-    T = size(x, 3)
+    T = size(x, 2)
     head_size = size(ps.query.weight, 1)
 
     T > sha.max_sequence_length && error("Input sequence length $(T) exceeds max sequence length $(sha.max_sequence_length)")
@@ -51,7 +51,7 @@ function (sha::SingleHeadAttention)(x::AbstractArray, ps, st::NamedTuple)
     wts = permutedims(q, (2, 1, 3)) ⊠ k # size = (T,T)
     causal_mask = view(st.causal_mask, 1:T, 1:T)
     wts = wts .- (causal_mask .* 1e12)
-   # Normalize so we get a probability
+    # Normalize so we get a probability
     wts = softmax(wts, dims=1)
     # Instead of working with token embeddings directly, work with the value
     v ⊠ wts, (query = st_q, key = st_k, value = st_v)

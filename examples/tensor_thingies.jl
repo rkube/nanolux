@@ -230,6 +230,10 @@ xbow3 = mean_thing_mat(x)
 xbow1 ≈ xbow2
 xbow1 ≈ xbow2
 
+#####
+my_triu = fill(true, (T, T))
+
+
 #############################################################################################
 # Continue on implementing self-attention
 # Video time-code:  https://youtu.be/kCc8FmEb1nY?t=3757
@@ -282,6 +286,7 @@ function mask1(wts, tt)
     for ix_b ∈ axes(wts, 3)
         wts[tt.!= 1.0, ix_b] .= -Inf
     end
+    wts
 end
 
 #julia> @benchmark mask1(wts, my_triu)
@@ -293,8 +298,8 @@ end
 #   ▅██▇▄▂▁                                                      ▂
 #  █████████▆▅▃▃▅▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▃▄▃▃▄▁▄▃▅▄▆▆▅▆▆▆▇▆▆▇█▆▆▆▅▅▅▃▅▅ █
 #  379 ns        Histogram: log(frequency) by time       2.19 μs <
-
- Memory estimate: 2.50 KiB, allocs estimate: 20.
+#
+#  Memory estimate: 2.50 KiB, allocs estimate: 20.
 
 # 2. Double for loop, eliminates need for triu matrix
 function mask2(wts)
@@ -305,6 +310,7 @@ function mask2(wts)
             end
         end
     end
+    return wts
 end
 
 # 3. Don't index through triu, but subtraction should broadcast correctly
@@ -362,6 +368,7 @@ softmax(wts3, dims=1) ≈ softmax(wts, dims=1)
 
 
 function single_head_attention(x, head_size)
+    C, T, B = size(x)
     # Models for key, query, and value
     key = Dense(C => head_size; use_bias=false)
     ps_k, st_k = Lux.setup(rng, key)
@@ -390,49 +397,45 @@ function single_head_attention(x, head_size)
     wts = softmax(wts, dims=1)
     # Instead of working with token embeddings directly, work with the value
     v ⊠ wts
+end
+
+
+
+function sha_v2(x, head_size)
+    C, T, B =size(x)
+    key = Dense(C => head_size; use_bias=false)
+    ps_k, st_k = Lux.setup(rng, key)
+
+    query = Dense(C => head_size; use_bias=false)
+    ps_q, st_q = Lux.setup(rng, query)
+
+    value = Dense(C => head_size; use_bias=false)
+    ps_v, st_v = Lux.setup(rng, query)
+
+    k, _ = key(x , ps_k, st_k)  # size = (head_size, T, B)
+    q, _ = query(x, ps_q, st_q) # size = (head_size, T, B)
+    v, _ = value(x, ps_v, st_v) # size = (head_size, T, B)
+
+    # Bag-of-word averaging is replaced by q*k vector products
+    wts = permutedims(q, (2,1,3)) ⊠ k # size = (T, T)
+
+    causal_mask = tril(fill(true, T, T), -1)
+
+    wts = wts .- (causal_mask .* 1e12)
+    # Normalize so we get a probability
+    wts = softmax(wts, dims=1)
+    # Instead of working with token embeddings directly, work with the value
+    v ⊠ wts 
+
 
 end
 
-out = single_head_attention(x, 16)
-
-#
-#struct SingleHeadAttention{Q, K, V} <: LuxCore.AbstractLuxContainerLayer{(:query, :key, :value)}
-#    vocab_size::Int
-#    head_size::Int
-#    query::Q 
-#    key::K 
-#    value::V 
-#end
-#
-#
-#function LuxCore.initialparameters(rng::AbstractRNG, sha::SingleHeadAttention)
-#    return (query.weight = sha.init_weight(rng, sha.head_size, sha.vocab_size),
-#            key.weight = sha.init_weight(rng, sha.head_size, sha.vocab_size),
-#            value.weight = sha.init_weight(rng, sha.head_size, sha.vocab_size))
-#end
-#
-#LuxCore.initialstates(::AbstractRNG, sha::SingleHeadAttention{Q, K, V}) where {Q, K, V} = NamedTuple(mask = triu((ones(sha.head_size, sha.head_size))))
-#
-#
-#function (sha::SingleHeadAttention)(x::AbstractMatrix, ps, st::NamedTuple)
-#    # Calculate query, key, and value vectors
-#    q, _ = sha.query(x, ps.query, st.query)
-#    k, _ = sha.key(x, ps.key, st.key)
-#    v, _ = sha.value(x, ps.value, st.value)
-#
-#
-#    wts = permutedims(q, (2, 1, 3)) ⊠ k # size = (T,T)
-#    # Auto-regressive structure implemented by triu matrix, prohibiting communication
-#    # with the past
-#    my_triu = triu(ones(T, T))
-#    # Unfortunately, we don't have a batched masked fill. So iterate it out
-#    for ix_b ∈ axes(wts, 3)
-#        wts[my_triu .!= 1.0, ix_b] .= -Inf 
-#    end
-#    # Normalize so we get a probability
-#    wts = softmax(wts, dims=1)
-#    # Instead of working with token embeddings directly, work with the value
-#    v ⊠ wts
-#end
 
 
+Random.seed!(32)
+out_v1 = single_head_attention(Float32.(x), 16)
+
+Random.seed!(32)
+out_v2 = sha_v2(Float32.(x), 16)
+
+out_v1 ≈ out_v2
