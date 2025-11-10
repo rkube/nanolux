@@ -68,7 +68,7 @@ using MLUtils
 # These return the number of observations and a single observation respectively:
 
 # For `numobs` it is enough to define `Base.length` for  NanoDataset:
-Base.length(d::NanoDataset) = d.length - d.block_size - 2
+Base.length(d::NanoDataset) = length(d.data) - d.block_size - 2
 
 # Now we can do
 numobs(dataset)

@@ -1,7 +1,7 @@
 # # Implementation of the attention mechanism
 # 
-# ## Tokenization: 
+# ## Mathematical formulation
 #
-# ## From characters to embeddings
-#
+# The key to implementing the attention mechanism is to define a masking operation for token averaging.
+# Given a matrix
 # ## 

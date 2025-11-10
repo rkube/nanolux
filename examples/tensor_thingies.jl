@@ -69,29 +69,47 @@ C, T, B = 2, 8, 4
 # This is re-arranged to julia layout
 x = permutedims(x_py, (3,2,1))
 
-# A function that calculates the x[t,b] = mean_{i<=t} x[b,i] at 
+# The layout of this matrix is like
+#
+#
+# x_11  x_12  x_13 ... x_1T
+# x_21  x_22  x_23 ... x_2T
+# ...   ..     ...      ...
+# x_C1  x_C2  X_C3 ... X_CT
+#
+# Now we are looking at three ways to calculate the average of 
+# vectors [x_11; x_21; ...; x_C1], [x_21; x_22; ...; x_C2], ... [x_i1; x_i2; ...; x_Ci]
+# where i ≤ t. This is the running average along the time dimension.
+# These averages are calculated individually for each batch.
+# A function that calculates the x[c,t,b] = mean_{i<=t} x[c,i,b] at 
 # https://youtu.be/kCc8FmEb1nY?t=2759
+#
+# 
+#
+#
 # Trying to be nice with memory allocation
 # Note: In torch, you can omit indices in a way you can't in Julia
 # For example, in python x[0,0] means the same as x[0,0,:].
 # You can index x with only 2 indices although it is 3 dimensional.
 # Julia requires you to write out the third dimension
-function mean_thing_view(x)
-
+function token_avg_view(x)
     xbow = zeros(eltype(x), C, T, B) 
-    for ix_b in 1:B
-        for ix_t in 1:T
-            xprev = view(x, :, 1:ix_t, ix_b)
-            m = mean(xprev, dims=2)
+    for ix_b in 1:B                             # Pick out a single batch
+        for ix_t in 1:T                         # For each token vector, iterating over time in the sequence
+            xprev = view(x, :, 1:ix_t, ix_b)    # Create a view of all preceeding tokens including the current ont
+            m = mean(xprev, dims=2)             # Calculate the mean over the sequence.
             xbow[:, ix_t, ix_b] .= m[:, 1]
-            #@show xprev
         end
     end
     xbow
 end
 
 
-@benchmark mean_thing_view(x)
+
+
+
+
+@benchmark token_avg_view(x)
 """
 julia> @benchmark mean_thing_view(x)
 BenchmarkTools.Trial: 10000 samples with 1 evaluation per sample.
@@ -108,8 +126,7 @@ BenchmarkTools.Trial: 10000 samples with 1 evaluation per sample.
 
 
 
-function mean_thing_noview(x)
-
+function token_avg_noview(x)
     xbow = zeros(eltype(x), C, T, B) 
     for ix_b in 1:B
         for ix_t in 1:T
@@ -124,7 +141,7 @@ function mean_thing_noview(x)
 end
 
 
-@benchmark mean_thing_noview(x)
+@benchmark token_avg_noview(x)
 
 
 """
@@ -141,29 +158,47 @@ BenchmarkTools.Trial: 10000 samples with 1 evaluation per sample.
  Memory estimate: 52.14 KiB, allocs estimate: 1324.
 """
 
-xbow = mean_thing_view(x)
+xbow = token_avg_view(x)
 
-# The trick in self-attention
-a = ones(3, 3)
+# To create triangular matrces in Julia, we call the triu function, just as in torch.
+a = triu(fill(true, 2,2))
+#     / 1  1 \
+# a = \ 0  1 /
+#
+#      2  7
+# b =  6  4
+#      6  5
+#
+#
+#           2  (2 + 7)
+# b * a =   6  (6 + 4)
+#           6  (6 + 5)
 b = [2.0 7.0; 6.0 4.0; 6.0 5.0]
-c = a * b
+c = b * a
 
-# To create triangular matrces in Julia, we call the tril function, just as in torch.
-a = tril(ones(3,3))
-b = [2.0 7.0; 6.0 4.0; 6.0 5.0]
-c = a * b
+# The second row of c should now be the column-wise sum of c[1,:], c[2,:]
+
+# This is the row-wise sum, but we need to calculate the row-wise average.
+# To do this, we can scale the rows of a by the row-wise sum.
 
 # We can adapt this to calculate a mean from a sum
-a = tril(ones(3,3)) 
-a = a ./ sum(a, dims=2) # Divide by the row-wise sum. We don't need keepdim=True, as in pytorch.
-b = [2.0 7.0; 6.0 4.0; 6.0 5.0]
+a = triu(fill(true, 2,2)) 
+a = a ./ sum(a, dims=1) # Divide by the row-wise sum. We don't need keepdim=True, as in pytorch.
+#
+#
+# a = / 1 0.5  \ 
+#     \ 0  0.5 /
+#
 # Now the rows of c store the average of all the elements deposited in the row.
-c = a * b
+c = b * a
+
+
+
 
 # The central idea is that we can formulate the mean_{i≤t} operation by using a lower triangular matrix.
 # In particular
 #
-wts = triu(ones(T, T))
+wts = triu(fill(true, T, T))
 wts = wts ./ sum(wts, dims=1)
 
 # Now we can express the time-average through matrix multiplication.
@@ -190,7 +225,7 @@ xbow2 ≈ xbow
 # To do weighted aggregations, it is useful to use a softmax.
 # Like 1 and 0 are just extreme cases. In the future we want to allow intermediate values
 # This softmax formulation here prepares us for this.
-my_triu = triu(ones(T, T))
+my_triu = triu(fill(true, T, T))
 wts2 = zeros(T, T)
 wts2[my_triu .!= 1.0] .= -Inf
 wts2 = softmax(wts2, dims=1)
@@ -212,7 +247,7 @@ BenchmarkTools.Trial: 10000 samples with 72 evaluations per sample.
  Memory estimate: 3.61 KiB, allocs estimate: 22.
 """
 
-function mean_thing_mat(x)
+function token_avg_mat(x)
     T = size(x, 2)
     my_triu = triu(ones(T, T))
     wts = zeros(T, T)
@@ -224,14 +259,13 @@ end
 
 
 # All three mean-thing functions are equal
-xbow1 = mean_thing_noview(x)
-xbow2 = mean_thing_view(x)
-xbow3 = mean_thing_mat(x)
+xbow1 = token_avg_noview(x)
+xbow2 = token_avg_view(x)
+xbow3 = token_avg_mat(x)
 xbow1 ≈ xbow2
 xbow1 ≈ xbow2
 
 #####
-my_triu = fill(true, (T, T))
 
 
 #############################################################################################
@@ -242,15 +276,17 @@ my_triu = fill(true, (T, T))
 rng = Random.default_rng()
 Random.seed!(rng, 1337)
 
-B, T, C = 4, 8, 32
+C, T, B = 32, 8, 4
 
 x = randn(Float32, C, T, B)
 
 head_size = 16
 
+# Every token emitts a key
 key = Dense(C => head_size; use_bias=false)
 ps_k, st_k = Lux.setup(rng, key)
 
+# Every token emitts a query
 query = Dense(C => head_size; use_bias=false)
 ps_q, st_q = Lux.setup(rng, query)
 
@@ -262,10 +298,11 @@ k, _ = key(x , ps_k, st_k)  # size = (head_size, T, B)
 q, _ = query(x, ps_q, st_q) # size = (head_size, T, B)
 v, _ = value(x, ps_v, st_v) # size = (head_size, T, b)
 
-# This is what we want
+# Instead of a uniform coupling matrix, we now use key-query dot-products.
+# This makes the coupling data-driven.
 wts_unrolled = [q[:,:,ix]' * k[:,:,ix] for ix in axes(q,3)]
 
-# Try writing it with Boxtimes. (head_size, T, B) * ( T, head_size, B) -> (T, 
+# We write this with Boxtimes. (head_size, T, B) * ( T, head_size, B) -> (T, T)
 #wts_box = q ⊠ permutedims(k, (2,1,3))
 wts = permutedims(q, (2,1,3)) ⊠ k
 
@@ -289,7 +326,7 @@ function mask1(wts, tt)
     wts
 end
 
-#julia> @benchmark mask1(wts, my_triu)
+@benchmark mask1(wts, my_triu)
 #BenchmarkTools.Trial: 10000 samples with 202 evaluations per sample.
 # Range (min … max):  378.510 ns …  17.847 μs  ┊ GC (min … max): 0.00% … 96.14%
 # Time  (median):     473.802 ns               ┊ GC (median):    0.00%
@@ -313,17 +350,16 @@ function mask2(wts)
     return wts
 end
 
+@benchmark mask2(wts)
+
 # 3. Don't index through triu, but subtraction should broadcast correctly
 function mask3(wts, tt)
     causal_mask = view(tt, 1:T, 1:T)
-#    for ix_b ∈ axes(wts, 3)
-#        wts[tt.!= 1.0, ix_b] .= -Inf
-#    end
     wts = wts .- (causal_mask .* 1e12)
     return wts
 end
 
-#julia> @benchmark mask3(wts3, m) setup = (m = tril(fill(true, 16, 16), -1))
+@benchmark mask3(wts, m) setup = (m = tril(fill(true, 16, 16), -1))
 #BenchmarkTools.Trial: 10000 samples with 641 evaluations per sample.
 # Range (min … max):  171.997 ns …  10.002 μs  ┊ GC (min … max):  0.00% … 96.20%
 # Time  (median):     213.924 ns               ┊ GC (median):     0.00%
@@ -338,35 +374,17 @@ end
 
 
 mask1(wts, my_triu)
-@show wts
+mask2(wts)
+mask3(wts, mm)
 
-wts3 = mask3(wts3, mm)
-
-
-for ix_b ∈ axes(wts, 3)
-    wts[my_triu .!= 1.0, ix_b] .= -Inf
-end
-
-for ix_b ∈ axes(wts2, 3)
-    for j in 1:T
-        for i in j+1:T
-            wts2[i, j, ix_b] = -Inf
-        end
-    end
-end
-
-wts = softmax(wts, dims=1)
-v, _ = value(x, ps_v, st_v)
-
-wts3 = mask3(wts, mm)
-
-softmax(wts3, dims=1) ≈ softmax(wts, dims=1)
+# All three ways of masking five the same output
+mask1(wts, my_triu) == mask2(wts)
+mask1(wts, my_triu) == mask3(wts, mm)
 
 
 
 
-
-
+# Implementation of sha with mask1
 function single_head_attention(x, head_size)
     C, T, B = size(x)
     # Models for key, query, and value
@@ -401,6 +419,7 @@ end
 
 
 
+# Implementation of sha with mask3
 function sha_v2(x, head_size)
     C, T, B =size(x)
     key = Dense(C => head_size; use_bias=false)
@@ -413,8 +432,11 @@ function sha_v2(x, head_size)
     ps_v, st_v = Lux.setup(rng, query)
 
     k, _ = key(x , ps_k, st_k)  # size = (head_size, T, B)
+    @show size(k)
     q, _ = query(x, ps_q, st_q) # size = (head_size, T, B)
+    @show size(q)
     v, _ = value(x, ps_v, st_v) # size = (head_size, T, B)
+    @show size(v)
 
     # Bag-of-word averaging is replaced by q*k vector products
     wts = permutedims(q, (2,1,3)) ⊠ k # size = (T, T)
@@ -424,14 +446,17 @@ function sha_v2(x, head_size)
     wts = wts .- (causal_mask .* 1e12)
     # Normalize so we get a probability
     wts = softmax(wts, dims=1)
+    @show size(wts)
     # Instead of working with token embeddings directly, work with the value
-    v ⊠ wts 
+    out = v ⊠ wts 
+    @show size(out)
+    out
 
 
 end
 
 
-
+# Test that both sha implementations give the same answer
 Random.seed!(32)
 out_v1 = single_head_attention(Float32.(x), 16)
 

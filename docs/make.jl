@@ -14,7 +14,10 @@ for n in 1:length(example_scripts)
     Literate.markdown(example_filepath, OUTPUT_DIR)
 end
 
-example_pages = ["Attention" => "literated/attention.md", "Dataloading" => "literated/dataloading.md"]
+example_pages = [
+    "Dataloading" => "literated/dataloading.md",
+    "Attention" => "literated/attention.md"
+]
 
 
 makedocs(sitename="NanoLux documentation", remotes=nothing,
