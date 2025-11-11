@@ -24,31 +24,40 @@ using NanoLux
 
 function train(tstate::Training.TrainState, vjp, loader_train, loader_valid, num_epochs) 
     # Move things to cpu since we can't have onehotbatches for ConcretePJRTArrays
+    cdev = cpu_device()
+    xdev = reactant_device()
+    println("Training")
+
     for epoch in 1:num_epochs
         loss_epoch = 0.0
         for (ix_batch, batch) in enumerate(loader_train)
             xb, yb = batch
-            yb_hot = onehotbatch(yb, 1:65)
+            batch_size = last(size(xb))
+            yb_hot = onehotbatch(cdev(yb), 1:65) |> xdev
+            #@show size(yb_hot)
+            #yb_hot = Enzyme.onehot(yb, 1, 65)
             _, loss, _, tstate = Training.single_train_step!(vjp, CrossEntropyLoss(; agg=mean, logits=Val(true)), (xb, yb_hot), tstate)
-            loss_epoch += loss
+            loss_epoch += loss / batch_size
 
-            if mod(ix_batch, 100) == 0
-                # Evaluate loss on train and validation set
-                loss_valid = 0.0
-                for (ix_b, batch) ∈ enumerate(loader_valid)
-#                    #xb, yb = batch
-#                    #xb |> cdev
-#                    #yb |> cdev
-#                    #yb_hot = onehotbatch(yb, 1:65) |> xdev
-                    loss_valid += 0.1
-#                    #x_out, _ = tstate.model(xb, ps, st)
-#                    #loss_train += CrossEntropyLoss(; agg=mean, logits=Val(true))(x_out, yb_hot)
-                end
-                println("Batch $(ix_batch)   Validation loss=$(loss_valid)")
-                loss_valid = 0.0
-            end
+            # Calculate validation loss over 100 samples
+            #if mod(ix_batch, 1000) == 0
+            #    n_samples = 100
+            #    # Evaluate loss on train and validation set
+            #    loss_valid = 0.0
+            #    st_ = Lux.testmode(tstate.states)
+            #    for (ix_bv, batch_v) ∈ enumerate(loader_valid)
+            #        ix_bv > n_samples && break
+            #        xv_b, yv_b = batch_v
+            #        yv_b_hot = onehotbatch(cdev(yv_b), 1:65) |> xdev
+            #        xv_out, _ = tstate.model(xv_b, tstate.parameters, st_)
+            #        loss_valid += CrossEntropyLoss(; agg=mean, logits=Val(true))(xv_out, yv_b_hot)
+            #    end
+            #    loss_valid /= n_samples
+            #    println("Batch $(ix_batch)   Validation loss=$(loss_valid)")
+            #    loss_valid = 0.0
+            #end
         end
-        loss_epoch /= length(data_loader)
+        loss_epoch = loss_epoch / length(loader_train) 
 
         if mod(epoch, 1) == 0
             println("Epoch: $(epoch)    Loss: $(loss_epoch)")
@@ -80,7 +89,7 @@ end
 function runme()
     rng = Random.default_rng()
     Random.seed!(rng, 1337)
-    batch_size = 128
+    batch_size = 16
     block_size = 32
     head_size = 16
     n_embd = 64
@@ -90,9 +99,8 @@ function runme()
 
     d = NanoDataset(DATAFILE, block_size)
     d_train, d_valid = splitobs(d, at=0.8)
-    loader_train = DataLoader(d_train, batchsize=batch_size, collate=true, shuffle=true)
-    loader_valid = DataLoader(d_valid, batchsize=batch_size, collate=true, shuffle=true)
-
+    loader_train = DataLoader(d_train, batchsize=batch_size, collate=true, shuffle=true, partial=false)
+    loader_valid = DataLoader(d_valid, batchsize=batch_size, collate=true, shuffle=true, partial=false)
 
     vocab_size = get_vocab_size(d)
     model = get_model(vocab_size, n_embd, head_size)
@@ -104,8 +112,8 @@ function runme()
     # Move things on to the device
     ps_ra = ps |> xdev 
     st_ra = st |> xdev
-    loader_train |> xdev 
-    loader_test |> xdev
+    loader_train = loader_train |> xdev 
+    loader_valid = loader_valid |> xdev
 
     opt = Adam(1f-3)
 
@@ -117,7 +125,7 @@ function runme()
 
     # Generate output of the trained model
     ps_train = tstate_fin.parameters |> cdev
-    xb, _ = first(data_loader)
+    xb, _ = first(loader_valid)
 
     model_output = generate(xb, 20, model, ps_train, st)
 

@@ -30,3 +30,23 @@ wts = permutedims(q, (2,1,3))  ⊠ k .* Float32(sqrt(head_size))
 
 
 
+```
+❯ julia --project=. --threads=auto  src/training_enzyme_clean_v1.jl
+Training
+ERROR: LoadError: INVALID_ARGUMENT: Executable expected parameter 0 of size 4096 but got buffer with incompatible size 3840
+[...]
+ [10] single_train_step_impl!
+    @ ~/.julia/packages/Reactant/CWPwg/src/Profiler.jl:105 [inlined]
+ [11] #single_train_step!#7
+    @ ~/.julia/packages/Lux/uEbqO/src/helpers/training.jl:382 [inlined]
+ [12] single_train_step!(
+[...]
+```
+The problem were partial batches. Dropping partial batches from the loader
+```
+loader_valid = DataLoader(d_train, batchsize=batch_size, collate=true, shuffle=true)                      │
+loader_train = DataLoader(d_train, batchsize=batch_size, collate=true, shuffle=true, partial=false)
+```
+Solved it.
+
+

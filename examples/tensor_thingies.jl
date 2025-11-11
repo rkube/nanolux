@@ -443,7 +443,7 @@ function sha_v2(x, head_size)
 
     causal_mask = tril(fill(true, T, T), -1)
 
-    wts = wts .- (causal_mask .* 1e12)
+    wts = wts .- (causal_mask .* 1f12)
     # Normalize so we get a probability
     wts = softmax(wts, dims=1)
     @show size(wts)
