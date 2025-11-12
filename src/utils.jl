@@ -55,8 +55,10 @@ function generate(input, max_new_tokens, model, ps, st)
     # 3. Get the initial context (the very last input token)
     current_token = view(tokens_out, 1:T, :)
     for ix_t in 1:max_new_tokens
+        #@show ix_t
         # 1. Get the logits from the model.
         #    Here we pass only the last token,
+        #@show size(current_token)
         logits, st = model(current_token, ps, st)
         #@show size(logits)
 
@@ -77,10 +79,12 @@ function generate(input, max_new_tokens, model, ps, st)
         #@show size(idx_next)
 
         # 5. Store the new token in the output array 
-        tokens_out[T+ix_t:T+ix_t, :] .= idx_next 
+        tokens_out[T+ix_t, :] .= idx_next[1,:] 
 
         # 6. Update the context window for the next iteration 
-        current_token = view(tokens_out, 1:T+ix_t, :)
+        #    This context window is a sliding window of shape T.
+        #    It needs to be this size because the size of the positional embedding is T.
+        current_token = view(tokens_out, 1+ix_t:T+ix_t, :)
     end
     return tokens_out
 end

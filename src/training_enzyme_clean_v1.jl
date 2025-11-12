@@ -8,6 +8,7 @@ using OneHotArrays
 using Optimisers
 using Random
 using Reactant
+using ProgressBars
 
 using NanoLux
 
@@ -34,10 +35,8 @@ function train(tstate::Training.TrainState, vjp, loader_train, loader_valid, num
             xb, yb = batch
             batch_size = last(size(xb))
             yb_hot = onehotbatch(cdev(yb), 1:65) |> xdev
-            #@show size(yb_hot)
-            #yb_hot = Enzyme.onehot(yb, 1, 65)
             _, loss, _, tstate = Training.single_train_step!(vjp, CrossEntropyLoss(; agg=mean, logits=Val(true)), (xb, yb_hot), tstate)
-            loss_epoch += loss / batch_size
+            loss_epoch += loss 
 
             # Calculate validation loss over 100 samples
             #if mod(ix_batch, 1000) == 0
@@ -64,6 +63,49 @@ function train(tstate::Training.TrainState, vjp, loader_train, loader_valid, num
         end
     end
     return tstate
+end
+
+
+function estimate_loss(model, ps, st, data_loader; max_iter=1000)
+    loss_total = 0.0
+    loss_fn = CrossEntropyLoss(; agg=mean, logits=Val(true))
+    for (ix_b, batch) in ProgressBar(enumerate(data_loader))
+        ix_b > max_iter && break
+        xb, yb = batch
+        yb_hot = onehotbatch(cdev(yb), 1:65) |> xdev
+        y_pred, _ = model(xb, ps, st)
+        loss_total += loss_fn(y_pred, yb_hot)
+    end
+    return loss_total / max_iter
+end
+
+function train_v2(tstate::Training.TrainState, vjp, loader_train, loader_valid, num_iter)
+    cdev = cpu_device()
+    xdev = reactant_device()
+    println("Training")
+
+    loss_iter = 0.0
+
+    for (ix_it, batch) in enumerate(loader_train)
+        ix_it > num_iter && break
+        xb, yb = batch
+        yb_hot = onehotbatch(cdev(yb), 1:65) |> xdev
+        _, loss, _, tstate = Training.single_train_step!(vjp, CrossEntropyLoss(; agg=mean, logits=Val(true)), (xb, yb_hot), tstate)
+        loss_iter += loss
+
+        if mod(ix_it, 100) == 0
+            ps_c = tstate.parameters |> cdev
+            st_c = Lux.testmode(tstate.states) |> cdev
+            loss_train = estimate_loss(tstate.model, ps_c, st_c, loader_train)
+            loss_valid = estimate_loss(tstate.model, ps_c, st_c, loader_valid)
+            println("Iteration $(ix_it). Training loss: $(loss_train). Validation loss: $(loss_valid)")
+        end
+
+    end
+    loss_total = loss_iter / num_iter
+    println("----- Final loss: $(loss_total)")
+    return tstate
+
 end
 
 
@@ -120,17 +162,18 @@ function runme()
     # Create an initial training state
     tstate = Training.TrainState(model, ps_ra, st_ra, opt)
     # Save the trained parameters of the model
-    tstate_fin = train(tstate, AutoEnzyme(), loader_train, loader_valid, 1) 
+    #tstate_fin = train(tstate, AutoEnzyme(), loader_train, loader_valid, 1) 
+    tstate_fin = train_v2(tstate, AutoEnzyme(), loader_train, loader_valid, 500) 
     println("Training done")
 
     # Generate output of the trained model
     ps_train = tstate_fin.parameters |> cdev
-    xb, _ = first(loader_valid)
+    xb, _ = first(loader_valid) |> cdev
 
-    model_output = generate(xb, 20, model, ps_train, st)
+    model_output = generate_v2(xb, 50, model, ps_train, st)
 
     println("Model output:")
-    print(join(decode(d, model_output[:, 5]), ""))
+    print(join(decode(d, model_output[:, 9]), ""))
 end
 
 
