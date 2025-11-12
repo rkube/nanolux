@@ -38,6 +38,16 @@ function (sha::SingleHeadAttention)(x::AbstractArray, ps, st::NamedTuple)
     v, st_v = sha.value(x, ps.value, st.value)  # size = (head_size, T, B) 
 
     wts = permutedims(k, (2, 1, 3)) ⊠ q ./ xT(sqrt(head_size)) # size = (T,T)
+
+    #         <k1, q1>  <k1, q2>  ... <k1, qT>
+    #         <k2, q1>  <k2, q2>  ... <k2, qT>
+    #            ...      ...     ...   ...
+    #  wts =  <kT, q1>  <kT, q2>  ...  <kT, qT>
+    #
+    # The mask needs to prevent a token at a given position to attending to subsequent tokens.
+    # That is, <k_i, q_j> for i > j. These scalar products are in the lower triangular, below
+    # the main diagonal. A lower triangular matrix from diagonal -1, does the trick.
+
     # We later apply softmax. For large values, softmax may converge to a one-hot vector.
     # If we scale them, the resulting distribution after softmax will be more diffuse
     causal_mask = tril(fill(true, T, T), -1)
@@ -46,6 +56,12 @@ function (sha::SingleHeadAttention)(x::AbstractArray, ps, st::NamedTuple)
     # Normalize to get a probability
     wts = softmax(wts, dims=1)
     v ⊠ wts, (query = st_q, key = st_k, value = st_v)  # Size (C, T, B)
+    
+
 end
 
 
+"""
+    MultiHeadAttention
+"""
+#struct MultiHeadAttention
