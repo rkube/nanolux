@@ -61,7 +61,32 @@ function (sha::SingleHeadAttention)(x::AbstractArray, ps, st::NamedTuple)
 end
 
 
-"""
-    MultiHeadAttention
-"""
+#"""
+#    MultiHeadAttention
+#"""
+#
 #struct MultiHeadAttention
+#    heads
+#    proj
+#end
+#
+#function MultiHeadAttention(n_embd, num_heads)
+#    head_size = n_embd ÷ num_heads
+#    return MultiHeadAttention(
+#        [SingleHeadAttention(n_embd, head_size) for _ in 1:num_heads],
+#        Dense(n_embd => n_embd, relu)
+#    )
+#end
+#
+#function LuxCore.initialstates(rng::AbstractRNG, mha::MultiHeadAttention)
+#    return(heads=[LuxCore.initialstates(rng) for _ in 1:num_heads], proj=Luxcore.initialstates(mha.proj))
+#end
+#
+#function (mha::MultiHeadAttention)(x::AbstractArray, ps, st::NamedTuple)
+#    num_heads = length(mha.heads)
+#    out = Parallel(vcat, [mha.heads[i](x, ps, st) for i in num_heads]...)
+#    out = mha.proj(out, ps.dense, st.dense)
+#    out
+#end
+#
+

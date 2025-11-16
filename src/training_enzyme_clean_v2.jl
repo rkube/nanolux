@@ -24,6 +24,8 @@ using NanoLux
 
 
 function estimate_loss(model, ps, st, data_loader; max_iter=1000)
+    cdev = cpu_device()
+    xdev = reactant_device()
     loss_total = 0.0
     loss_fn = CrossEntropyLoss(; agg=mean, logits=Val(true))
     for (ix_b, batch) in ProgressBar(enumerate(data_loader))
@@ -67,21 +69,25 @@ end
 
 
 function get_model(vocab_size, n_embd, head_size)
+    num_heads = n_embd ÷ head_size
     model = @compact(token_embedding = Embedding(vocab_size => n_embd),
-                     pos_embedding = Embedding(vocab_size => n_embd),
-                     sa_head = SingleHeadAttention(n_embd, n_embd),
-                     lm_head = Dense(n_embd => vocab_size)
-                     ) do x
-                     T, B = size(x)     # T: block_size (the sequence length), B: batch_size
-                     tok_emb = token_embedding(x)   # size (C, T, B)
-                     pos_emb = pos_embedding(1:T)   # size (C, T)
-                     x = tok_emb .+ pos_emb
-                     x = Parallel(
-                     x = sa_head(x)
-                      
-                     logits = lm_head(x)
-                     @return logits
-                     end
+        pos_embedding = Embedding(vocab_size => n_embd),
+        ma_head = Parallel(vcat, [SingleHeadAttention(n_embd, head_size) for _ in 1:num_heads]...),
+        ffwd_1 = Dense(n_embd => n_embd, relu),
+        dropout = Dropout(0.0),
+        ffwd_2 = Dense(n_embd => n_embd),
+        lm_head = Dense(n_embd => vocab_size, relu)
+        ) do x
+    T, B = size(x)     # T: block_size (the sequence length), B: batch_size
+    tok_emb = token_embedding(x)   # size (C, T, B)
+    pos_emb = pos_embedding(1:T)   # size (C, T)
+    x = tok_emb .+ pos_emb
+    x = x + ma_head(x)
+    x1 = ffwd_1(x)
+    x = x + ffwd_2(x1)
+    logits = lm_head(x)
+    @return logits
+    end
     return model
 end
 
@@ -89,10 +95,10 @@ end
 function runme()
     rng = Random.default_rng()
     Random.seed!(rng, 1337)
-    batch_size = 1
+    batch_size = 3
     block_size = 32
     head_size = 16
-    n_embd = 64
+    n_embd = 32
 
     xdev = reactant_device()
     cdev = cpu_device()
@@ -104,23 +110,11 @@ function runme()
 
     vocab_size = get_vocab_size(d)
 
-    x = rand(1:65, block_size, batch_size);
-
-    model_e = Embedding(vocab_size => n_embd)
-    ps_e, st_e = Lux.setup(rng, model_e)
-    x_e, _ =model_e(x, ps_e, st_e)
-
-    model_mha = Parallel(nothing, SingleHeadAttention(n_embd, n_embd), SingleHeadAttention(n_embd, n_embd),SingleHeadAttention(n_embd, n_embd), SingleHeadAttention(n_embd, n_embd))
-
-    ps_mha, st_mha = Lux.setup(rng, model_mha)
-    x_out, _ = model_mha(x_e, ps_mha, st_mha)
-
-
     model = get_model(vocab_size, n_embd, head_size)
     ps, st = Lux.setup(rng, model)
 
     x = rand(1:65, 8, 4)
-    model(x, ps, st)
+    y_p, _ = model(x, ps, st)
 
     # Move things on to the device
     ps_ra = ps |> xdev 
@@ -133,17 +127,17 @@ function runme()
     # Create an initial training state
     tstate = Training.TrainState(model, ps_ra, st_ra, opt)
     # Save the trained parameters of the model
-    tstate_fin = train_v2(tstate, AutoEnzyme(), loader_train, loader_valid, 5_000) 
+    tstate_fin = train(tstate, AutoEnzyme(), loader_train, loader_valid, 10_000) 
     println("Training done")
 
     # Generate output of the trained model
     ps_train = tstate_fin.parameters |> cdev
     xb, _ = first(loader_valid) |> cdev
 
-    model_output = generate_v2(xb, 500, model, ps_train, st)
+    model_output = generate(xb, 100, model, ps_train, st);
 
     println("Model output:")
-    print(join(decode(d, model_output[:, 9]), ""))
+    print(join(decode(d, model_output[:, 3]), ""))
 end
 
 
