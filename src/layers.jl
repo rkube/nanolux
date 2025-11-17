@@ -1,5 +1,7 @@
 
 export SingleHeadAttention
+export MultiHeadAttention
+export FeedForward
 
 """
     SingleHeadAttention
@@ -22,22 +24,43 @@ end
 
 
 
-function LuxCore.initialstates(::AbstractRNG, sha::SingleHeadAttention{Q, K, V}) where {Q, K, V} 
+function LuxCore.initialstates(::AbstractRNG, ::SingleHeadAttention{Q, K, V}) where {Q, K, V} 
     return (query=NamedTuple(;), key = NamedTuple(;), value=NamedTuple(;))
 end
 
 
 function (sha::SingleHeadAttention)(x::AbstractArray, ps, st::NamedTuple)
     # x has shape (features, sequence_length, batch_size)
-    xT = eltype(x)
-    T = size(x, 2)
-    head_size = size(ps.query.weight, 1)
-
     q, st_q = sha.query(x, ps.query, st.query)  # size = (head_size, T, B)
     k, st_k = sha.key(x, ps.key, st.key)        # size = (head_size, T, B)
     v, st_v = sha.value(x, ps.value, st.value)  # size = (head_size, T, B) 
+    scores = calc_scaled_dot_prod_attn(q, k, v)
+    scores, (query = st_q, key = st_k, value = st_v)
+end
 
-    wts = permutedims(k, (2, 1, 3)) ⊠ q ./ xT(sqrt(head_size)) # size = (T,T)
+"""
+    calc_scaled_dot_prod_attn(Q, K, V)
+
+Calculate the scaled dot-product attention:
+
+softmax(Q K^T / sqrt(d_k)) * V
+
+# Arguments
+- `Q` - Query tensor, of dimension (head_size, T, B)
+- `K` - Key tensor, of dimension (head_size, T, B)
+- `V` - Value tensor, of dimension (head_size, T, B)
+
+# Returns 
+- Attention scores 
+   
+"""
+function calc_scaled_dot_prod_attn(Q, K, V)
+    xT = eltype(Q)
+    head_size = size(Q, 1)
+    T = size(Q, 2)
+
+    wts = permutedims(K, (2, 1, 3)) ⊠ Q ./ xT(sqrt(head_size))
+    #wts = permutedims(k, (2, 1, 3)) ⊠ q ./ xT(sqrt(head_size)) # size = (T,T)
 
     #         <k1, q1>  <k1, q2>  ... <k1, qT>
     #         <k2, q1>  <k2, q2>  ... <k2, qT>
@@ -48,45 +71,95 @@ function (sha::SingleHeadAttention)(x::AbstractArray, ps, st::NamedTuple)
     # That is, <k_i, q_j> for i > j. These scalar products are in the lower triangular, below
     # the main diagonal. A lower triangular matrix from diagonal -1, does the trick.
 
-    # We later apply softmax. For large values, softmax may converge to a one-hot vector.
+    # For large values, softmax may converge to a one-hot vector.
     # If we scale them, the resulting distribution after softmax will be more diffuse
     causal_mask = tril(fill(true, T, T), -1)
-
     wts = wts .- (causal_mask .* 1f12) # size (T, T, B)
-    # Normalize to get a probability
     wts = softmax(wts, dims=1)
-    v ⊠ wts, (query = st_q, key = st_k, value = st_v)  # Size (C, T, B)
-    
-
+    V ⊠ wts
 end
 
 
-#"""
-#    MultiHeadAttention
-#"""
-#
-#struct MultiHeadAttention
-#    heads
-#    proj
-#end
-#
-#function MultiHeadAttention(n_embd, num_heads)
-#    head_size = n_embd ÷ num_heads
-#    return MultiHeadAttention(
-#        [SingleHeadAttention(n_embd, head_size) for _ in 1:num_heads],
-#        Dense(n_embd => n_embd, relu)
-#    )
-#end
-#
-#function LuxCore.initialstates(rng::AbstractRNG, mha::MultiHeadAttention)
-#    return(heads=[LuxCore.initialstates(rng) for _ in 1:num_heads], proj=Luxcore.initialstates(mha.proj))
-#end
-#
-#function (mha::MultiHeadAttention)(x::AbstractArray, ps, st::NamedTuple)
-#    num_heads = length(mha.heads)
-#    out = Parallel(vcat, [mha.heads[i](x, ps, st) for i in num_heads]...)
-#    out = mha.proj(out, ps.dense, st.dense)
-#    out
-#end
-#
+"""
+    MultiHeadAttention
+"""
+
+struct MultiHeadAttention{Q, K, V} <: LuxCore.AbstractLuxContainerLayer{(:query, :key, :value)}
+    n_heads::Integer
+    query::Q
+    key::K
+    value::V
+end
+
+# Q, K, V are calculated for all heads at once. Do do this, they have to map from (in_dim) => (n_heads * head_size)
+function MultiHeadAttention(in_dim::Int, num_heads::Int; init_weight=glorot_uniform)
+    mod(in_dim, num_heads) != 0 && DimensionMismatch("Number of heads must divide input dimension. Got: $(mod(in_dim, num_heads))")
+    head_size = in_dim ÷ num_heads
+    return MultiHeadAttention(
+        num_heads,
+        Dense(in_dim => num_heads * head_size; use_bias=false, init_weight=init_weight),
+        Dense(in_dim => num_heads * head_size; use_bias=false, init_weight=init_weight),
+        Dense(in_dim => num_heads * head_size; use_bias=false, init_weight=init_weight),
+    )
+end
+
+LuxCore.initialstates(::AbstractRNG, ::MultiHeadAttention) = (query=NamedTuple(;), key=NamedTuple(;), value=NamedTuple(;))
+    
+
+function (mha::MultiHeadAttention)(x::AbstractArray, ps, st::NamedTuple)
+    in_dim = size(ps.query.weight)[2]
+    
+    head_size = in_dim ÷ mha.n_heads
+    # 1. Calculate Q, K, V
+    q, st_q = mha.query(x, ps.query, st.query)
+    k, st_k = mha.query(x, ps.query, st.query)
+    v, st_v = mha.query(x, ps.query, st.query)
+
+    #@show size(q), size(k), size(v)
+
+    # 2. Reshape to split into different heads
+    q_rs = reshape(q, (head_size, mha.n_heads, size(q)[2:end]...))
+    k_rs = reshape(k, (head_size, mha.n_heads, size(q)[2:end]...))
+    v_rs = reshape(v, (head_size, mha.n_heads, size(q)[2:end]...))
+
+    #@show size(q_rs), size(k_rs), size(v_rs)
+
+    # 3. Calculate attention scores for each head
+    attn_scores = [calc_scaled_dot_prod_attn(q_rs[:, i, :, :], k_rs[:, i, :, :], v_rs[:, i, :, :]) for i in axes(q_rs, 2)]
+    # 4. Concatenate the results
+    return cat(attn_scores..., dims=1), (query=st_q, key=st_q, value=st_v)
+end
+
+
+"""
+    Feed Forward block
+"""
+struct FeedForward{D1, D2, DO} <: LuxCore.AbstractLuxContainerLayer{(:dense_1, :dense_2, :dropout)}
+    dense_1::D1
+    dense_2::D2
+    dropout::DO
+end
+
+function FeedForward(n_embd, p_dropout)
+    return FeedForward(
+        Dense(n_embd => 4 * n_embd, relu),
+        Dense(4 * n_embd, n_embd),
+        Dropout(p_dropout)
+    )
+end
+
+function LuxCore.initialstates(rng::AbstractRNG, f::FeedForward) 
+    (dense_1 = NamedTuple(;), dense_2 = NamedTuple(;), dropout=LuxCore.initialstates(rng, f.dropout))
+end
+
+function(ffwd::FeedForward)(x::AbstractArray, ps, st::NamedTuple)
+    x, st_d1 = ffwd.dense_1(x, ps.dense_1, st.dense_1)
+    x, st_d2 = ffwd.dense_2(x, ps.dense_2, st.dense_2)
+    x, st_dr = ffwd.dropout(x, ps.dropout, st.dropout)
+    x, (dense_1 = st_d1, dense_2 = st_d2, dropout = st_dr)
+end
+
+
+
+
 

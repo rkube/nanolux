@@ -67,6 +67,8 @@ end
 
 
 function estimate_loss(model, ps, st, data_loader; max_iter=1000)
+    xdev = reactant_device()
+    cdev = cpu_device()
     loss_total = 0.0
     loss_fn = CrossEntropyLoss(; agg=mean, logits=Val(true))
     for (ix_b, batch) in ProgressBar(enumerate(data_loader))
@@ -113,7 +115,7 @@ function get_model(vocab_size, n_embd, head_size)
     model = @compact(token_embedding = Embedding(vocab_size => n_embd),
                      pos_embedding = Embedding(vocab_size => n_embd),
                      sa_head = SingleHeadAttention(n_embd, n_embd),
-                     lm_head = Dense(n_embd => vocab_size)
+                     lm_head = Dense(n_embd => vocab_size, relu)
                      ) do x
                      T, B = size(x)     # T: block_size (the sequence length), B: batch_size
                      tok_emb = token_embedding(x)   # size (C, T, B)
@@ -170,7 +172,7 @@ function runme()
     ps_train = tstate_fin.parameters |> cdev
     xb, _ = first(loader_valid) |> cdev
 
-    model_output = generate_v2(xb, 50, model, ps_train, st)
+    model_output = generate(xb, 500, model, ps_train, st)
 
     println("Model output:")
     print(join(decode(d, model_output[:, 9]), ""))

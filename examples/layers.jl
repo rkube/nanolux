@@ -55,9 +55,9 @@ size(x_e)
 # The single attention head we implemented maps each embedding vector (there are (block_sizexbatch_size) of them)
 # into n_embd dimensional vectors through Q, K, and V.
 #
-model_sha = SingleHeadAttention(n_embd, n_embd)
-ps_s, st_s = Lux.setup(rng, model_sha)
-x_sha, _ = model_sha(x_e, ps_s, st_s)
+model_sha = SingleHeadAttention(n_embd, head_size)
+ps_sha, st_sha = Lux.setup(rng, model_sha)
+x_sha, _ = model_sha(x_e, ps_sha, st_sha)
 size(x_sha)
 
 # In multi-head attention, the output for Q, K, and V is of dimension n_head. That is, Q, K, and V now map into
@@ -123,4 +123,39 @@ ps_ffwd, st_ffwd = Lux.setup(rng, model_ffwd)
 x_ffwd, _ = model_ffwd(x_mha, ps_ffwd, st_ffwd)
 
 size(x_ffwd)
+
+
+# Now the kicker: We can be smart by doing the Q,K,V projections in a single matrix multiply.
+#
+# In single-head attention, Q, K, and V are projections from (n_embd) => (head_size).
+# That is, they just calculate matrix multiplications like this:
+x_out, _ = model_sha.query(x_e, ps_sha.query, st_sha.query)
+x_out ≈ ps_sha.query.weight ⊠ x_e
+
+# Here we use ⊠ to batch the matrix multiplication over the last dimension. For the first batch
+# this is would be
+x_out[:,:,1] ≈ ps_sha.query.weight * x_e[:,:,1]
+
+# The size of the W_Q is just (head_size, n_embd). If we vertically stack W_Q with another W_Q, we get a
+# matrix of size (2 * head_size, n_embd). In this way, we can calculate Q for multiple heads using only
+# a single call to the matrix multiplication.
+w = randn(head_size, n_embd)
+q = w * x_e[:,:,1]
+
+# We now stack w on top of each other. This effectively means we are using two heads:
+w2 = vcat(w, w)
+q2 = w2*x_e[:,:,1]
+
+# The operation above is the identical to calculating q twice, one time for each head.
+q2 ≈ vcat(q,q)
+
+# We can no reshape q2 into the query for both heads. To do this, we introduce a new dimension after the first,
+# which indices the individual attention heads.
+q2_rs = reshape(q2, (head_size, 2, block_size));
+q2_rs[:, 1, :] == q2_rs[:, 2, :]
+
+# So what we are going to do for the multi-head implementation is to calculate Q, K, and V for all
+# heads in one go. Then we are using reshaping to separate the concatenated Q,K,V into individual heads
+
+
 
