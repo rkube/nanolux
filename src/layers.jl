@@ -113,8 +113,8 @@ function (mha::MyMultiHeadAttention)(x::AbstractArray, ps, st::NamedTuple)
     head_size = in_dim ÷ mha.n_heads
     # 1. Calculate Q, K, V
     q, st_q = mha.query(x, ps.query, st.query)
-    k, st_k = mha.query(x, ps.query, st.query)
-    v, st_v = mha.query(x, ps.query, st.query)
+    k, st_k = mha.key(x, ps.key, st.key)
+    v, st_v = mha.value(x, ps.value, st.value)
 
     #@show size(q), size(k), size(v)
 
@@ -128,7 +128,7 @@ function (mha::MyMultiHeadAttention)(x::AbstractArray, ps, st::NamedTuple)
     # 3. Calculate attention scores for each head
     attn_scores = [calc_scaled_dot_prod_attn(q_rs[:, i, :, :], k_rs[:, i, :, :], v_rs[:, i, :, :]) for i in axes(q_rs, 2)]
     # 4. Concatenate the results
-    return cat(attn_scores..., dims=1), (query=st_q, key=st_q, value=st_v)
+    return cat(attn_scores..., dims=1), (query=st_q, key=st_k, value=st_v)
 end
 
 
@@ -208,7 +208,7 @@ function(t::Transformer)(x::AbstractArray, ps, st::NamedTuple)
     x_ln2, st_ln2 = t.ln2(x, ps.ln2, st.ln2)
     x_ffwd, st_ffwd = t.ffwd(x_ln2, ps.ffwd, st.ffwd)
 
-    return x + x_ffwd, (ln1 = st_ln1, ln2 = st_ln2, mha = st_mha, ffwd=st_ffwd)
+    return x + x_ffwd, (mha = st_mha, ffwd = st_ffwd, ln1 = st_ln1, ln2 = st_ln2) 
 end
 
 
