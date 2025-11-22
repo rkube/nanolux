@@ -1,7 +1,8 @@
 
 export SingleHeadAttention
-export MultiHeadAttention
-export FeedForward
+export MyMultiHeadAttention
+export FeyedForwar
+export Transformer
 
 """
     SingleHeadAttention
@@ -81,10 +82,10 @@ end
 
 
 """
-    MultiHeadAttention
+    MyMultiHeadAttention
 """
 
-struct MultiHeadAttention{Q, K, V} <: LuxCore.AbstractLuxContainerLayer{(:query, :key, :value)}
+struct MyMultiHeadAttention{Q, K, V} <: LuxCore.AbstractLuxContainerLayer{(:query, :key, :value)}
     n_heads::Integer
     query::Q
     key::K
@@ -92,10 +93,10 @@ struct MultiHeadAttention{Q, K, V} <: LuxCore.AbstractLuxContainerLayer{(:query,
 end
 
 # Q, K, V are calculated for all heads at once. Do do this, they have to map from (in_dim) => (n_heads * head_size)
-function MultiHeadAttention(in_dim::Int, num_heads::Int; init_weight=glorot_uniform)
+function MyMultiHeadAttention(in_dim::Int, num_heads::Int; init_weight=glorot_uniform)
     mod(in_dim, num_heads) != 0 && DimensionMismatch("Number of heads must divide input dimension. Got: $(mod(in_dim, num_heads))")
     head_size = in_dim ÷ num_heads
-    return MultiHeadAttention(
+    return MyMultiHeadAttention(
         num_heads,
         Dense(in_dim => num_heads * head_size; use_bias=false, init_weight=init_weight),
         Dense(in_dim => num_heads * head_size; use_bias=false, init_weight=init_weight),
@@ -103,10 +104,10 @@ function MultiHeadAttention(in_dim::Int, num_heads::Int; init_weight=glorot_unif
     )
 end
 
-LuxCore.initialstates(::AbstractRNG, ::MultiHeadAttention) = (query=NamedTuple(;), key=NamedTuple(;), value=NamedTuple(;))
+LuxCore.initialstates(::AbstractRNG, ::MyMultiHeadAttention) = (query=NamedTuple(;), key=NamedTuple(;), value=NamedTuple(;))
     
 
-function (mha::MultiHeadAttention)(x::AbstractArray, ps, st::NamedTuple)
+function (mha::MyMultiHeadAttention)(x::AbstractArray, ps, st::NamedTuple)
     in_dim = size(ps.query.weight)[2]
     
     head_size = in_dim ÷ mha.n_heads
@@ -132,7 +133,7 @@ end
 
 
 """
-    Feed Forward block
+    Feed Forward 
 """
 struct FeedForward{D1, D2, DO} <: LuxCore.AbstractLuxContainerLayer{(:dense_1, :dense_2, :dropout)}
     dense_1::D1
@@ -160,6 +161,55 @@ function(ffwd::FeedForward)(x::AbstractArray, ps, st::NamedTuple)
 end
 
 
+"""
+    Transformer block
+
+The Transformer block ties it all together: Multi-Head Attention, Feed-Forward, and Layer Norms.
+"""
+struct Transformer{H, F, L1, L2} <: LuxCore.AbstractLuxContainerLayer{(:mha, :ffwd, :ln1, :ln2)}
+    mha::H      # Multi-Head Attention block
+    ffwd::F
+    ln1::L1
+    ln2::L2
+end
+
+function Transformer(n_embd, n_head, seq_length)
+    head_size = n_embd ÷ n_head
+    Transformer(
+        MyMultiHeadAttention(n_embd, head_size),
+        FeedForward(n_embd, 0.1),
+        LayerNorm((n_embd, seq_length)),
+        LayerNorm((n_embd, seq_length))
+    )
+end
+
+function LuxCore.initialstates(rng::AbstractRNG, t::Transformer)
+    return (
+        mha = Lux.initialstates(rng, t.mha),
+        ffwd = Lux.initialstates(rng, t.ffwd),
+        ln1 = Lux.initialstates(rng, t.ln1),
+        ln2 = Lux.initialstates(rng, t.ln2)
+    )
+end
+
+"""
+Forward pass for the Transformer Block.
+
+In simple terms, its:
+x = x + mha(ln1(x))
+x = x + ffwd(ln2(x))
+"""
+function(t::Transformer)(x::AbstractArray, ps, st::NamedTuple)
+    x_ln1, st_ln1 = t.ln1(x, ps.ln1, st.ln1)
+    x_mha, st_mha = t.mha(x_ln1, ps.mha, st.mha)
+    
+    x = x + x_mha
+
+    x_ln2, st_ln2 = t.ln2(x, ps.ln2, st.ln2)
+    x_ffwd, st_ffwd = t.ffwd(x_ln2, ps.ffwd, st.ffwd)
+
+    return x + x_ffwd, (ln1 = st_ln1, ln2 = st_ln2, mha = st_mha, ffwd=st_ffwd)
+end
 
 
 

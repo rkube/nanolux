@@ -25,20 +25,10 @@ xdev = reactant_device()
 x_r = x |> xdev
 y_r = y |> xdev
 
+# remember to use @jit
+y_oh = @jit  onehotbatch(y_r, 1:7)
+
+# This will fail
 y_oh = onehotbatch(y_r, 1:7)
-
-
-import Reactant: unwrapped_eltype
-#Reactant.unwrapped_eltype(::Type{Tuple{T1, T2}}) where {T1, T2} = Tuple{unwrapped_eltype(T1), unwrapped_eltype(T2)}
-Reactant.unwrapped_eltype(::Type{Tuple{T, T}}) where {T} = T
-
-onehotbatch(y_r, 1:7)
-
-input1 = Reactant.ConcreteRArray(ones(10))
-function foo(x)
-    return extrema(x)
-end
-
-f = @compile foo(input1)
 
 

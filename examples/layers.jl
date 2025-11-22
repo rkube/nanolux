@@ -8,6 +8,7 @@ using MLUtils
 using Random
 using Reactant
 using NanoLux
+using NNlib
 
 
 function get_model(vocab_size, n_embd, head_size)
@@ -157,5 +158,21 @@ q2_rs[:, 1, :] == q2_rs[:, 2, :]
 # So what we are going to do for the multi-head implementation is to calculate Q, K, and V for all
 # heads in one go. Then we are using reshaping to separate the concatenated Q,K,V into individual heads
 
+model_mha = NanoLux.MultiHeadAttention(n_embd, 4)
+
+ps_mha, st_mha = Lux.setup(rng, model_mha)
+
+x_mha, _ = model_mha(x_e, ps_mha, st_mha)
 
 
+# Test the feed-forward block
+model_ffwd = NanoLux.FeedForward(64, 0.25)
+ps_f, st_f = Lux.setup(rng, model_ffwd)
+
+x_f, st_f = model_ffwd(x_mha, ps_f, st_f)
+
+model_ln = LayerNorm((64,32))
+ps_l, st_l = Lux.setup(rng, model_ln)
+
+
+x_n, st_n = model_ln(x_f, ps_l, st_l)
