@@ -24,46 +24,53 @@ using NanoLux
 
 
 function estimate_loss(model, ps, st, data_loader; max_iter=1000)
-    #cdev = cpu_device()
-    #xdev = reactant_device()
+    println("Estimating loss")
     loss_total = 0.0
     loss_fn = CrossEntropyLoss(; agg=mean, logits=Val(true))
+
+    # We are working with reactant. That means, we have to do some precompiling of the functions
+    # that are called with reactant arrays. Remember, ps, xb, and yb are now all reactant arrays! 
+    (xb, yb) = first(data_loader)
+    onehotbatch_c = @compile onehotbatch(yb, 1:65)
+    model_c = @compile model(xb, ps, st)
+    
+
     for (ix_b, batch) in ProgressBar(enumerate(data_loader))
         ix_b > max_iter && break
         xb, yb = batch
-        #yb_hot = onehotbatch(cdev(yb), 1:65) |> xdev
-        yb_hot = @jit onehotbatch(yb, 1:65)
-        y_pred, _ = model(xb, ps, st)
+        yb_hot = onehotbatch_c(yb, 1:65)
+        y_pred, _ = model_c(xb, ps, st)
         loss_total += loss_fn(y_pred, yb_hot)
     end
     return loss_total / max_iter
 end
 
 function train(tstate::Training.TrainState, vjp, loader_train, loader_valid, num_iter)
-    #cdev = cpu_device()
-    #xdev = reactant_device()
     println("Training")
 
     loss_iter = 0.0
 
     time_start = time_ns()
 
+    (xb, yb) = first(loader_train)
+    onehotbatch_c = @compile onehotbatch(yb, 1:65)
+
     for (ix_it, batch) in enumerate(loader_train)
         ix_it > num_iter && break
         xb, yb = batch
-        #yb_hot = onehotbatch(cdev(yb), 1:65) |> xdev
-        yb_hot = @jit onehotbatch(yb, 1:65)
+        yb_hot = onehotbatch_c(yb, 1:65)
         _, loss, _, tstate = Training.single_train_step!(vjp, CrossEntropyLoss(; agg=mean, logits=Val(true)), (xb, yb_hot), tstate)
         loss_iter += loss
 
         if mod(ix_it, 100) == 0
             time_stop = time_ns()
-            ps_c = tstate.parameters |> cdev
-            st_c = Lux.testmode(tstate.states) |> cdev
+            ps_c = tstate.parameters #|> cdev
+            st_c = Lux.testmode(tstate.states) #|> cdev
             loss_train = estimate_loss(tstate.model, ps_c, st_c, loader_train)
             loss_valid = estimate_loss(tstate.model, ps_c, st_c, loader_valid)
-            time_elapsed_s = (time_start - time_stop) * 1e9
-            println("Iteration $(ix_it). Training loss: $(loss_train). Validation loss: $(loss_valid). Elapsed time: $(round(time_elapsed_s, digits=4))s")
+            time_elapsed_s = (time_stop - time_start) / 1e9
+            println("Iteration $(ix_it). Training loss: $(loss_iter / num_iter). Validation loss: $(loss_valid). Elapsed time: $(round(time_elapsed_s, digits=4))s")
+#            println("Elapsed time: $(round(time_elapsed_s, digits=4))s")
             time_start = time_ns()
         end
     end
@@ -85,7 +92,7 @@ function get_model(vocab_size, n_embd, num_heads, head_size)
         ) do x
     T, B = size(x)     # T: block_size (the sequence length), B: batch_size
     tok_emb = token_embedding(x)   # size (C, T, B)
-    pos_emb = pos_embedding(1:T)   # size (C, T)
+    pos_emb = pos_embedding(collect(1:T))   # size (C, T)
     x = tok_emb .+ pos_emb
     x = trf_block_1(x)
     x = trf_block_2(x)
@@ -134,7 +141,7 @@ function runme()
     # Create an initial training state
     tstate = Training.TrainState(model, ps_ra, st_ra, opt)
     # Save the trained parameters of the model
-    tstate_fin = train(tstate, AutoEnzyme(), loader_train, loader_valid, 500) 
+    tstate_fin = train(tstate, AutoEnzyme(), loader_train, loader_valid, 5_000) 
     println("Training done")
 
     # Generate output of the trained model
