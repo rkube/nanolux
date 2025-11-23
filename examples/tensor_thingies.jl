@@ -464,3 +464,130 @@ Random.seed!(32)
 out_v2 = sha_v2(Float32.(x), 16)
 
 out_v1 ≈ out_v2
+
+
+
+# Test how we can use batched matrix multiplication to speed up calculation of attention scores
+
+function calc_scaled_dot_prod_attn(Q, K, V)
+    xT = eltype(Q)
+    head_size = size(Q, 1)
+    T = size(Q, 2)
+    wts = permutedims(K, (2, 1, 3)) ⊠ Q ./ xT(sqrt(head_size))
+    # For large values, softmax may converge to a one-hot vector.
+    # If we scale them, the resulting distribution after softmax will be more diffuse
+    causal_mask = tril(fill(true, T, T), -1)
+    wts = wts .- (causal_mask .* 1f12) # size (T, T, B)
+    wts = softmax(wts, dims=1)
+    V ⊠ wts
+end
+
+
+function mha_v1(x, head_size, n_heads)
+    n_embd  = size(x, 1)
+    key = Dense(n_embd => n_heads * head_size; use_bias=false)
+    ps_k, st_k = Lux.setup(rng, key)
+
+    query = Dense(n_embd => n_heads * head_size; use_bias=false)
+    ps_q, st_q = Lux.setup(rng, query)
+
+    value = Dense(n_embd => n_heads * head_size; use_bias=false)
+    ps_v, st_v = Lux.setup(rng, query)
+
+    k, _ = key(x , ps_k, st_k)  # size = (head_size, T, B)
+    q, _ = query(x, ps_q, st_q) # size = (head_size, T, B)
+    v, _ = value(x, ps_v, st_v) # size = (head_size, T, B)
+    #@show size(k), size(q), size(v)
+
+    # Reshape to split into different heads
+    q_rs = reshape(q, (head_size, n_heads, size(q)[2:end]...));
+    k_rs = reshape(k, (head_size, n_heads, size(q)[2:end]...));
+    v_rs = reshape(v, (head_size, n_heads, size(q)[2:end]...));
+    #@show size(q_rs), size(k_rs), size(v_rs)
+
+    attn_scores = [calc_scaled_dot_prod_attn(q_rs[:, i, :, :], k_rs[:, i, :, :], v_rs[:, i, :, :]) for i in axes(q_rs, 2)]
+
+    return cat(attn_scores..., dims=1)
+end
+
+function mha_v2(x, head_size, n_heads)
+    n_embd, seq_len, num_batch  = size(x)
+    key = Dense(n_embd => n_heads * head_size; use_bias=false)
+    ps_k, st_k = Lux.setup(rng, key)
+
+    query = Dense(n_embd => n_heads * head_size; use_bias=false)
+    ps_q, st_q = Lux.setup(rng, query)
+
+    value = Dense(n_embd => n_heads * head_size; use_bias=false)
+    ps_v, st_v = Lux.setup(rng, query)
+
+    k, _ = key(x , ps_k, st_k)  # size = (head_size, T, B)
+    q, _ = query(x, ps_q, st_q) # size = (head_size, T, B)
+    v, _ = value(x, ps_v, st_v) # size = (head_size, T, B)
+
+    # Reshape to split into different heads
+    q_rs = reshape(q, (head_size, n_heads, size(q)[2:end]...));
+    k_rs = reshape(k, (head_size, n_heads, size(q)[2:end]...));
+    v_rs = reshape(v, (head_size, n_heads, size(q)[2:end]...));
+
+
+    # Now the trick: combine n_heads with the batch dimension (if it exists).
+    if ndims(q_rs) == 4 # case (h, n, T, B) h: head_size. n: num_heads. T: sequence length. B: Batch
+        # permute dimensions: (h, n, T, B) -> (h, T, n, B)
+        q_p = permutedims(q_rs, (1, 3, 2, 4))
+        k_p = permutedims(k_rs, (1, 3, 2, 4))
+        v_p = permutedims(v_rs, (1, 3, 2, 4))
+        # now merge the head and batch dimension together.
+        q_b = reshape(q_p, (head_size, seq_len, :))
+        k_b = reshape(k_p, (head_size, seq_len, :))
+        v_b = reshape(v_p, (head_size, seq_len, :))
+    else
+        # If there is no batch dimension, use the head dimension as the batch dimension
+        # (h, n, T) -> (h, T, n)
+        q_b = permutedims(q, (1, 3, 2))
+        k_b = permutedims(k, (1, 3, 2))
+        v_b = permutedims(v, (1, 3, 2))
+    end
+
+    # Calculate attention
+    attn_b = calc_scaled_dot_prod_attn(q_b, k_b, v_b)
+
+    # Reshape and permute to original layout
+    if ndims(q_rs) == 4
+        # (h, T, n*B) -> (h, T, n, B)
+        attn_q_p = reshape(attn_b, (head_size, seq_len, n_heads, B))
+        # (h, T, n, B) -> (h, n, T, B)
+        attn_rs = permutedims(attn_q_p, (1, 3, 2, 4))
+        # (h, n, T, B) -> (h*n, T, B)
+        attn = reshape(attn_rs, (n_embd, seq_len, num_batch))
+    else 
+        # (h, T, n) -> (h, n, T)
+        attn_rs = permutedims(attn_b, (1, 3, 2))
+        # (h, n, T) -> (h*n, T)
+        attn = reshape(attn_rs, (n_embd, seq_len))
+    end
+
+    return attn
+end
+
+
+n_embd = 64
+n_heads = 4
+head_size = n_embd ÷ n_heads
+T = 64
+B = 32
+
+Random.seed!(1337)
+x = randn(Float32, n_embd, T, B);
+
+Random.seed!(1337)
+x_1 = mha_v1(x, 16, 4)
+
+Random.seed!(1337)
+x_2 = mha_v2(x, 16, 4)
+   
+x_1 ≈ x_2
+
+@benchmark mha_v1(x, 16, 4) setup=(x=randn(Float32, n_embd, T, B))
+@benchmark mha_v2(x, 16, 4) setup=(x=randn(Float32, n_embd, T, B))
+

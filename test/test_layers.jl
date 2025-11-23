@@ -23,7 +23,6 @@
     
 end
 
-
 @testset "MHA_layer" begin
     n_embd, T, B = 64, 16, 4 
     head_size = 16
@@ -39,6 +38,25 @@ end
 
     @test size(x_out) == size(x)
 end
+
+# Test that the batched and looped attention implementations are equal
+@testset "attention_implementations" begin
+    rng = Random.default_rng()
+    Random.seed!(1337)
+    n_embd, T, B = 64, 16, 4
+    head_size = 16
+    n_heads = 4
+
+    q = randn(Float32, (n_embd, T, B));
+    k = randn(Float32, (n_embd, T, B));
+    v = randn(Float32, (n_embd, T, B));
+
+    attn_batched = NanoLux._calculate_attention(NanoLux.BatchedAttention(), n_heads, head_size, q, k, v);
+    attn_looped = NanoLux._calculate_attention(NanoLux.LoopedAttention(), n_heads, head_size, q, k, v);
+
+    @test attn_looped ≈ attn_batched
+end
+
 
 @testset "FeedForward" begin
    
@@ -62,7 +80,7 @@ end
     n_embd, T, B = 64, 16, 4
 
     rng = Random.default_rng()
-    ln = LayerNorm((n_embd, T))
+    ln = LayerNorm((n_embd, 1))
     ps, st = Lux.setup(rng, ln)
 
     # Test forward pass
@@ -80,12 +98,18 @@ end
 @testset "TransformerBlock" begin
     n_embd, T, B = 64, 16, 3
 
+    num_heads = 4
+
     rng = Random.default_rng()
-    t = Transformer(n_embd, 4, 16)
+    t = Transformer(n_embd, num_heads)
 
     ps, st = Lux.setup(rng, t)
 
 
+    # Test forward pass
+    x = randn(Float32, n_embd, T, B)
+
+    x_out, st_ = t(x, ps, st)
 end
 
 

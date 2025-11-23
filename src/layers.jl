@@ -46,6 +46,10 @@ Calculate the scaled dot-product attention:
 
 softmax(Q K^T / sqrt(d_k)) * V
 
+This implementation uses batched matrix multiplication and assumes that the last dimension is the
+batch dimension.
+
+
 # Arguments
 - `Q` - Query tensor, of dimension (head_size, T, B)
 - `K` - Key tensor, of dimension (head_size, T, B)
@@ -85,19 +89,26 @@ end
     MyMultiHeadAttention
 """
 
-struct MyMultiHeadAttention{Q, K, V} <: LuxCore.AbstractLuxContainerLayer{(:query, :key, :value)}
+struct MyMultiHeadAttention{T, Q, K, V} <: LuxCore.AbstractLuxContainerLayer{(:query, :key, :value)}
     n_heads::Integer
+    attention_impl::T
     query::Q
     key::K
     value::V
 end
 
+struct BatchedAttention end
+struct LoopedAttention end
+
+
 # Q, K, V are calculated for all heads at once. Do do this, they have to map from (in_dim) => (n_heads * head_size)
-function MyMultiHeadAttention(in_dim::Int, num_heads::Int; init_weight=glorot_uniform)
+function MyMultiHeadAttention(in_dim::Int, num_heads::Int; batched = true, init_weight=glorot_uniform)
     mod(in_dim, num_heads) != 0 && DimensionMismatch("Number of heads must divide input dimension. Got: $(mod(in_dim, num_heads))")
     head_size = in_dim ÷ num_heads
+    attention_impl = batched ? BatchedAttention() : LoopedAttention()
     return MyMultiHeadAttention(
         num_heads,
+        attention_impl,
         Dense(in_dim => num_heads * head_size; use_bias=false, init_weight=init_weight),
         Dense(in_dim => num_heads * head_size; use_bias=false, init_weight=init_weight),
         Dense(in_dim => num_heads * head_size; use_bias=false, init_weight=init_weight),
@@ -116,20 +127,137 @@ function (mha::MyMultiHeadAttention)(x::AbstractArray, ps, st::NamedTuple)
     k, st_k = mha.key(x, ps.key, st.key)
     v, st_v = mha.value(x, ps.value, st.value)
 
-    #@show size(q), size(k), size(v)
+    attn = _calculate_attention(mha.attention_impl, mha.n_heads, head_size, q, k, v)
+    return attn, (query=st_q, key=st_k, value=st_v)
+end
 
-    # 2. Reshape to split into different heads
-    q_rs = reshape(q, (head_size, mha.n_heads, size(q)[2:end]...))
-    k_rs = reshape(k, (head_size, mha.n_heads, size(q)[2:end]...))
-    v_rs = reshape(v, (head_size, mha.n_heads, size(q)[2:end]...))
+"""
+    _calculate_attention(::LoopedAttention, n_heads, head_size, q, k, v)
 
-    #@show size(q_rs), size(k_rs), size(v_rs)
+Calculate attention scores (using a loop over the head dimensions).
+
+This implementation calculates attention scores for each head invidivually.
+"""
+function _calculate_attention(::LoopedAttention, n_heads, head_size, q, k, v)
+    # Reshape to split into different heads
+    # (n_embd, T, B) -> (head_size, n_heads, T, B)
+    q_rs = reshape(q, (head_size, n_heads, size(q)[2:end]...))
+    k_rs = reshape(k, (head_size, n_heads, size(k)[2:end]...))
+    v_rs = reshape(v, (head_size, n_heads, size(v)[2:end]...))
 
     # 3. Calculate attention scores for each head
     attn_scores = [calc_scaled_dot_prod_attn(q_rs[:, i, :, :], k_rs[:, i, :, :], v_rs[:, i, :, :]) for i in axes(q_rs, 2)]
     # 4. Concatenate the results
-    return cat(attn_scores..., dims=1), (query=st_q, key=st_k, value=st_v)
+    return cat(attn_scores..., dims=1)
 end
+
+
+"""
+    _calculate_attention(::BatchedAttention, n_heads, head_size, q, k, v)
+
+Calculate attention scores (using batched matrix multiplication).
+
+This implementation makes use of the fact, that the method to calculate attention scores
+already uses batched matrix multiplication. To exploit this, we move the head and batch
+dimension together and calculate attention scores over each sequence. After that, the
+attention scores are restored to the original array order.
+"""
+function _calculate_attention(::BatchedAttention, n_heads, head_size, q, k, v)
+    in_dim, seq_len = size(ps.query.weight)[1:2]
+    in_dim = n_heads * head_size
+
+    #  Reshape to split into different heads
+    # (n_embd, T, B...) -> (head_size, n_heads, T, B...)
+    q_rs = reshape(q, (head_size, n_heads, size(q)[2:end]...))
+    k_rs = reshape(k, (head_size, n_heads, size(k)[2:end]...))
+    v_rs = reshape(v, (head_size, n_heads, size(v)[2:end]...))
+
+
+    # Now the fun part. Reshape and permute to move the heads into the batch dimension.
+    if ndims(q_rs) == 4 # size (h, n, T, B)
+        # permute heads next to batch: (h, n, T, B) -> (h, T, n, B)
+        q_p = permutedims(q_rs, (1, 3, 2, 4))
+        k_p = permutedims(k_rs, (1, 3, 2, 4))
+        v_p = permutedims(v_rs, (1, 3, 2, 4))
+
+        # merge heads and batch: (h, T, n, B) -> (h, T, n*B)
+        q_b = reshape(q_p, (head_size, seq_len, :))
+        k_b = reshape(k_p, (head_size, seq_len, :))
+        v_b = reshape(v_p, (head_size, seq_len, :))
+    else    # ndims = 3, size (h, n, T)
+        q_b = permutedims(q_rs, (1, 3, 2))
+        k_b = permutedims(k_rs, (1, 3, 2))
+        v_b = permutedims(v_rs, (1, 3, 2))
+    end
+
+    # Calculate attention scores for all heads simultaneously
+    attn_b = calc_scaled_dot_prod_attn(q_b, k_b, v_b)
+
+    # Reshape and permute back to original layout
+    if ndims(q_rs) == 4 # (h, T, n*B) -> (in_dim, T, B)
+        B = size(q_rs, 4)
+        # (h, T, n*B) -> (h, T, n, B)
+        attn_p_b = reshape(attn_b, (head_size, seq_len, n_heads, B))
+        # (h, T, n, B) -> (h, n, T, B)
+        attn_rs = permutedims(attn_p_b, (1, 3, 2, 4))
+        # (h, n, T, B) -> (h*n, T, B)
+        attn = reshape(attn_rs, (in_dim, seq_len, B))
+    else # ndims=3 (h, T, n) -> (in_dims, T)
+        # (h, T, n) -> (h, n, T)
+        attn_rs = permutedims(attn_b, (1, 3, 2))
+        attn = reshape(attn_rs, (in_dim, seq_len))
+    end
+
+    return attn 
+end
+
+
+function _calculate_attention(::BatchedAttention, n_heads::Integer, head_size::Integer, q::AbstractArray, k::AbstractArray, v::AbstractArray)
+    seq_len = size(q, 2)
+    in_dim = n_heads * head_size
+    # 2. Reshape to split into different heads
+    # (n_embd, T, B...) -> (head_size, n_heads, T, B...)
+    q_rs = reshape(q, (head_size, n_heads, size(q)[2:end]...))
+    k_rs = reshape(k, (head_size, n_heads, size(k)[2:end]...))
+    v_rs = reshape(v, (head_size, n_heads, size(v)[2:end]...))
+
+
+    # Now the fun part. Reshape and permute to move the heads into the batch dimension.
+    if ndims(q_rs) == 4 # size (h, n, T, B)
+        # permute heads next to batch: (h, n, T, B) -> (h, T, n, B)
+        q_p = permutedims(q_rs, (1, 3, 2, 4))
+        k_p = permutedims(k_rs, (1, 3, 2, 4))
+        v_p = permutedims(v_rs, (1, 3, 2, 4))
+
+        # merge heads and batch: (h, T, n, B) -> (h, T, n*B)
+        q_b = reshape(q_p, (head_size, seq_len, :))
+        k_b = reshape(k_p, (head_size, seq_len, :))
+        v_b = reshape(v_p, (head_size, seq_len, :))
+    else    # ndims = 3, size (h, n, T)
+        q_b = permutedims(q_rs, (1, 3, 2))
+        k_b = permutedims(k_rs, (1, 3, 2))
+        v_b = permutedims(v_rs, (1, 3, 2))
+    end
+
+    # Calculate attention scores for all heads simultaneously
+    attn_b = calc_scaled_dot_prod_attn(q_b, k_b, v_b)
+
+    # Reshape and permute back to original layout
+    if ndims(q_rs) == 4 # (h, T, n*B) -> (in_dim, T, B)
+        B = size(q_rs, 4)
+        # (h, T, n*B) -> (h, T, n, B)
+        attn_p_b = reshape(attn_b, (head_size, seq_len, n_heads, B))
+        # (h, T, n, B) -> (h, n, T, B)
+        attn_rs = permutedims(attn_p_b, (1, 3, 2, 4))
+        # (h, n, T, B) -> (h*n, T, B)
+        attn = reshape(attn_rs, (in_dim, seq_len, B))
+    else # ndims=3 (h, T, n) -> (in_dims, T)
+        # (h, T, n) -> (h, n, T)
+        attn_rs = permutedims(attn_b, (1, 3, 2))
+        attn = reshape(attn_rs, (in_dim, seq_len))
+    end
+end
+
 
 
 """
@@ -173,13 +301,13 @@ struct Transformer{H, F, L1, L2} <: LuxCore.AbstractLuxContainerLayer{(:mha, :ff
     ln2::L2
 end
 
-function Transformer(n_embd, n_head, seq_length)
+function Transformer(n_embd, n_head)
     head_size = n_embd ÷ n_head
     Transformer(
         MyMultiHeadAttention(n_embd, head_size),
         FeedForward(n_embd, 0.1),
-        LayerNorm((n_embd, seq_length)),
-        LayerNorm((n_embd, seq_length))
+        LayerNorm((n_embd, 1)),
+        LayerNorm((n_embd, 1))
     )
 end
 

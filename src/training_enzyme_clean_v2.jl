@@ -76,7 +76,7 @@ function get_model(vocab_size, n_embd, head_size)
         ffwd_1 = Dense(n_embd => n_embd, relu),
         dropout = Dropout(0.0),
         ffwd_2 = Dense(n_embd => n_embd),
-        lm_head = Dense(n_embd => vocab_size, relu)
+        lm_head = Dense(n_embd => vocab_size)
         ) do x
     T, B = size(x)     # T: block_size (the sequence length), B: batch_size
     tok_emb = token_embedding(x)   # size (C, T, B)
