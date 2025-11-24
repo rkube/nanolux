@@ -78,7 +78,8 @@ function calc_scaled_dot_prod_attn(Q, K, V)
 
     # For large values, softmax may converge to a one-hot vector.
     # If we scale them, the resulting distribution after softmax will be more diffuse
-    causal_mask = tril(fill(true, T, T), -1)
+    #causal_mask = tril(fill(true, T, T), -1)
+    causal_mask = tril(ones(xT, T, T), -1)
     wts = wts .- (causal_mask .* 1f12) # size (T, T, B)
     wts = softmax(wts, dims=1)
     V ⊠ wts

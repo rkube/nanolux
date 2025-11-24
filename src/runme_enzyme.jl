@@ -1,5 +1,5 @@
-
 using ADTypes
+using ArgParse
 using BenchmarkTools
 using Enzyme
 using Lux
@@ -21,6 +21,32 @@ using NanoLux
 # So we don't really need to have a custom-defined loss function that adheres to the TrainingState API.
 # Instead, we just pass the CrossEntropyLoss(; agg=mean, logits=Val(True)) into the single_train_step! function.
 
+function parse_commandline()
+    s = ArgParseSettings()
+    @add_arg_table s begin
+        "--n_embd"
+            help = "number of embedding dimensions"
+            arg_type = Int
+            default = 128
+        "--batch_size"
+            help = "batch size"
+            arg_type = Int
+            default = 32
+        "--block_size"
+            help = "block size"
+            arg_type = Int
+            default = 64
+        "--head_size"
+            help = "head size"
+            arg_type = Int
+            default = 16
+        "--num_iter"
+            help = "number of training iterations"
+            arg_type = Int
+            default = 5000
+    end
+    return parse_args(s)
+end
 
 
 function estimate_loss(model, ps, st, data_loader; max_iter=1000)
@@ -117,12 +143,15 @@ end
 
 
 function runme()
+    parsed_args = parse_commandline()
+    n_embd = parsed_args["n_embd"]
+    batch_size = parsed_args["batch_size"]
+    block_size = parsed_args["block_size"]
+    head_size = parsed_args["head_size"]
+    num_iter = parsed_args["num_iter"]
+    
     rng = Random.default_rng()
     Random.seed!(rng, 1337)
-    n_embd = 128
-    batch_size = 32
-    block_size = 64
-    head_size = 16
     num_heads = n_embd ÷ head_size
 
     xdev = reactant_device()
@@ -150,11 +179,9 @@ function runme()
     opt = Adam(1f-3)
 
     # Create an initial training state
-    Reactant.with_profiler("traces/") do
-        tstate = Training.TrainState(model, ps_ra, st_ra, opt)
-    end
+    tstate = Training.TrainState(model, ps_ra, st_ra, opt)
     # Save the trained parameters of the model
-    tstate_fin = train(tstate, AutoEnzyme(), loader_train, loader_valid, 5_000) 
+    tstate_fin = train(tstate, AutoEnzyme(), loader_train, loader_valid, num_iter) 
     println("Training done")
 
     # Generate output of the trained model
@@ -169,4 +196,3 @@ end
 
 
 runme()
-
