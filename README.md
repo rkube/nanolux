@@ -41,10 +41,10 @@ On my machine (Mac M4 Pro) I get the following performance for
 
 | Metric                  | Reactant  | Zygote      |
 |-------------------------|-----------|-------------|
-| Train 1st epoch:        | 120.12s   | 55.58s      |
+| Train 1st epoch:        | 86.94s    | 55.58s      |
 | Avg epoch training time | ~15s      | ~33s        |
 | Time to estimate losses | ~27s      | ~49s        |
-| Total training time     | ~536s     | ~873s       |
+| Total training time     | ~504s     | ~873s       |
 | Final loss (train)      | 1.54838   | 1.54454     |
 | Final loss (valid)      | 1.78198   | 1.78110     \
 
