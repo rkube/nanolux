@@ -2,10 +2,10 @@
 This repository re-implements [Andrej Karpathy's NanoGPT](https://github.com/karpathy/nanoGPT) using Julia's 
 [Lux](https://lux.csail.mit.edu/).
 
-There code does essentially the same as in the Videos, but it's re-styled to use Lux.
-Significant differences include
-1. Making use of the [Training API](https://lux.csail.mit.edu/stable/api/Lux/utilities#Training-API)
-2. The use of column-major ordering in Julia vs row-major in python.
+The code follows the content in the video closely, but it's re-styled to use Lux.
+Noteworthy is
+1. The use of column-major ordering in Julia vs row-major in python.
+2. The use of the [Training API](https://lux.csail.mit.edu/stable/api/Lux/utilities#Training-API)
 
 ## Installation
 To run this package, install Julia using [juliaup](https://julialang.org/install/).
@@ -41,11 +41,15 @@ On my machine (Mac M4 Pro) I get the following performance for
 
 | Metric                  | Reactant  | Zygote      |
 |-------------------------|-----------|-------------|
-| Train 1st batch:        | 120.12s   |
-| Avg batch training time | ~27s      |
-| Total training time     | ~536s     |
-| Final loss (train)      | 1.54838   |
-| Final loss (valid)      | 1.78198   |
+| Train 1st epoch:        | 120.12s   | 55.58s      |
+| Avg epoch training time | ~15s      | ~33s        |
+| Time to estimate losses | ~27s      | ~49s        |
+| Total training time     | ~536s     | ~873s       |
+| Final loss (train)      | 1.54838   | 1.54454     |
+| Final loss (valid)      | 1.78198   | 1.78110     \
+
+An epoch is defined as 500 batches, not the entire dataset. The default random number generator
+is used in both scripts and seeded identical, therefore the loss is about the same.
 
 
 ## Output
@@ -60,3 +64,21 @@ As maree, leeds ias he pitter hegge we instrued,
 Let, care depurn, with scrow; all lethy put friends
 The officitre one this screetnexding%
 ```
+(Reactant version)
+
+```
+Model output:
+of her good,
+To make her heavenly comforts of despair,
+When it in thistless, my for any not and fweetthy
+That an vry-do isso insterdon thy haths
+Nend spects, done I mucheambless; tore my dive.
+
+Loord:
+Good!
+No say, let thee, should; chose as thou?
+
+MARCIUS:
+I'll h
+```
+(Zygote version)
