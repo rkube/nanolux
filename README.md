@@ -19,9 +19,44 @@ Then, install the necessary requirements
 ```
 
 ## How to run
-The full transformer can be trained as:
+Training loops are implemented for both, `reactant` and `zygote`, backends. Run either one through
 
 ```julia
-julia --project=. src/training_enzyme_clean_v3.jl
+julia --project=. src/runme_enzyme.jl
+julia --project=. src/runme_zygote.jl
 ```
 
+Command line arguments are
+* `--n_embd=64`: Number of embedding dimensions
+* `--batch_size=32`: Batch size
+* `--block_size=64`: Block size (the sequence length)
+* `--head_size=16`: Length of transformer head size
+* `--num_iter=5_000`: Number of batches over which to train
+
+
+## Benchmarks
+On my machine (Mac M4 Pro) I get the following performance for
+`n_embd=64` `batch_size=32` `block_size=64` `head_size=16` `num_iter=5_000`
+
+
+| Metric                  | Reactant  | Zygote      |
+|-------------------------|-----------|-------------|
+| Train 1st batch:        | 120.12s   |
+| Avg batch training time | ~27s      |
+| Total training time     | ~536s     |
+| Final loss (train)      | 1.54838   |
+| Final loss (valid)      | 1.78198   |
+
+
+## Output
+
+An output sample after running with the default parameters:
+```
+ee
+As mountain winds: but then exactly do
+All points of my commalter, sishiredly, prove
+Let speak here obe your eaple of thee:
+As maree, leeds ias he pitter hegge we instrued,
+Let, care depurn, with scrow; all lethy put friends
+The officitre one this screetnexding%
+```

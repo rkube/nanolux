@@ -1,5 +1,5 @@
-
 using ADTypes
+using ArgParse
 using BenchmarkTools
 using Lux
 using MLUtils
@@ -20,23 +20,38 @@ using NanoLux
 # So we don't really need to have a custom-defined loss function that adheres to the TrainingState API.
 # Instead, we just pass the CrossEntropyLoss(; agg=mean, logits=Val(True)) into the single_train_step! function.
 
+function parse_commandline()
+    s = ArgParseSettings()
+    @add_arg_table s begin
+        "--n_embd"
+            help = "number of embedding dimensions"
+            arg_type = Int
+            default = 64
+        "--batch_size"
+            help = "batch size"
+            arg_type = Int
+            default = 32
+        "--block_size"
+            help = "block size"
+            arg_type = Int
+            default = 64
+        "--head_size"
+            help = "head size"
+            arg_type = Int
+            default = 16
+        "--num_iter"
+            help = "number of training iterations"
+            arg_type = Int
+            default = 5000
+    end
+    return parse_args(s)
+end
 
 
 function estimate_loss(model, ps, st, data_loader; max_iter=1000)
     println("Estimating loss")
     loss_total = 0.0
     loss_fn = CrossEntropyLoss(; agg=mean, logits=Val(true))
-
-    # We are working with reactant. That means, we have to compile all functions
-    # that will be called with reactant arrays. Remember, ps, xb, and yb are now all reactant arrays! 
-    #(xb, yb) = first(data_loader)
-    #onehotbatch_c = @compile onehotbatch(yb, 1:65)
-    #yb_hot = onehotbatch_c(yb, 1:65)
-    #model_c = @compile model(xb, ps, st)
-    #y_pred, _ = model_c(xb, ps, st)
-    #loss_fn_c = @compile loss_fn(y_pred, yb_hot)
-
-    
 
     for (ix_b, batch) in ProgressBar(enumerate(data_loader))
         ix_b > max_iter && break
@@ -54,10 +69,6 @@ function train(tstate::Training.TrainState, vjp, loader_train, loader_valid, num
     loss_iter = 0.0
 
     time_start = time_ns()
-
-    # (xb, yb) = first(loader_train)
-    # onehotbatch_c = @compile onehotbatch(yb, 1:65)
-
     for (ix_it, batch) in enumerate(loader_train)
         ix_it > num_iter && break
         xb, yb = batch
@@ -116,17 +127,19 @@ end
 
 
 function runme()
-    rng = Random.default_rng()
-    Random.seed!(rng, 1337)
-    n_embd = 128
-    batch_size = 32
-    block_size = 64
-    head_size = 16
+    parsed_args = parse_commandline()
+    n_embd = parsed_args["n_embd"]
+    batch_size = parsed_args["batch_size"]
+    block_size = parsed_args["block_size"]
+    head_size = parsed_args["head_size"]
+    num_iter = parsed_args["num_iter"]
     num_heads = n_embd ÷ head_size
 
-    xdev = reactant_device()
-    cdev = cpu_device()
+    # Instantiate RNG 
+    rng = Random.default_rng()
+    Random.seed!(rng, 1337)
 
+    # Set up data loading
     d = NanoDataset(DATAFILE, block_size)
     d_train, d_valid = splitobs(d, at=0.8)
     loader_train = DataLoader(d_train, batchsize=batch_size, collate=true, shuffle=true, partial=false)
@@ -134,31 +147,23 @@ function runme()
 
     vocab_size = get_vocab_size(d)
 
+    # Instantiate the model and initialize parameters and state
     model = get_model(vocab_size, n_embd, num_heads, head_size)
     ps, st = Lux.setup(rng, model)
-
-    x = rand(1:65, block_size, batch_size)
-    y_p, _ = model(x, ps, st)
-
-    # Move things on to the device
-    #ps_ra = ps |> xdev 
-    #st_ra = st |> xdev
-    #loader_train = loader_train |> xdev 
-    #loader_valid = loader_valid |> xdev
 
     opt = Adam(1f-3)
 
     # Create an initial training state
-    # Reactant.with_profiler("traces/") do
-        tstate = Training.TrainState(model, ps, st, opt)
-    #end
-    # Save the trained parameters of the model
-    tstate_fin = train(tstate, AutoZygote(), loader_train, loader_valid, 5_000) 
-    println("Training done")
+    tstate = Training.TrainState(model, ps, st, opt)
+    # Save the trained parameters of the model in tstate_fin
+    t0 = time_ns()
+    tstate_fin = train(tstate, AutoZygote(), loader_train, loader_valid, num_iter) 
+    t1 = time_ns()
+    println("Training done: $((t1 - t0) / 1e9)s")
 
     # Generate output of the trained model
-    ps_train = tstate_fin.parameters |> cdev
-    xb, _ = first(loader_valid) |> cdev
+    ps_train = tstate_fin.parameters
+    xb, _ = first(loader_valid)
 
     model_output = generate(xb, 200, model, ps_train, st);
 
@@ -168,4 +173,3 @@ end
 
 
 runme()
-

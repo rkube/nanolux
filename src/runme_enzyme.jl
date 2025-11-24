@@ -27,7 +27,7 @@ function parse_commandline()
         "--n_embd"
             help = "number of embedding dimensions"
             arg_type = Int
-            default = 128
+            default = 64
         "--batch_size"
             help = "batch size"
             arg_type = Int
@@ -149,14 +149,16 @@ function runme()
     block_size = parsed_args["block_size"]
     head_size = parsed_args["head_size"]
     num_iter = parsed_args["num_iter"]
-    
+    num_heads = n_embd ÷ head_size
+
+    # Instantiate RNG 
     rng = Random.default_rng()
     Random.seed!(rng, 1337)
-    num_heads = n_embd ÷ head_size
 
     xdev = reactant_device()
     cdev = cpu_device()
 
+    # Set up data loading
     d = NanoDataset(DATAFILE, block_size)
     d_train, d_valid = splitobs(d, at=0.8)
     loader_train = DataLoader(d_train, batchsize=batch_size, collate=true, shuffle=true, partial=false)
@@ -164,11 +166,9 @@ function runme()
 
     vocab_size = get_vocab_size(d)
 
+    # Instantiate the model and initialize parameters and state
     model = get_model(vocab_size, n_embd, num_heads, head_size)
     ps, st = Lux.setup(rng, model)
-
-    #x = rand(1:65, block_size, batch_size)
-    #y_p, _ = model(x, ps, st)
 
     # Move things on to the device
     ps_ra = ps |> xdev 
@@ -180,9 +180,11 @@ function runme()
 
     # Create an initial training state
     tstate = Training.TrainState(model, ps_ra, st_ra, opt)
-    # Save the trained parameters of the model
+    # Save the trained parameters of the model in tstate_fin
+    t0 = time_ns()
     tstate_fin = train(tstate, AutoEnzyme(), loader_train, loader_valid, num_iter) 
-    println("Training done")
+    t1 = time_ns()
+    println("Training done: $((t1 - t0) / 1e9)s")
 
     # Generate output of the trained model
     ps_train = tstate_fin.parameters |> cdev
